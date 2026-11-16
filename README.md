@@ -42,10 +42,15 @@ The [source exploration notebook](notebooks/01_source_exploration.ipynb) was use
 ### C. Data Scope and Volume
 #### Data Scope
 • One company, Vietnam only, currency VND.
+
 • Period: 01/01/2024 to 31/12/2024.
+
 • Sales to retail customers (SRC01) and orders from distributors (SRC05) are separate processes and get separate fact tables.
+
 • Language: the data comes from a Vietnamese company, so text values are in Vietnamese with diacritics (e.g. region `Miền Nam`, payment method `Công nợ`, return status `Đã xử lý`, customer and employee names). Column names are already in English.
+
   – All files are read and stored as UTF-8, and text is normalised to Unicode NFC in staging so that visually identical values match in joins and group-bys.
+  
   – Names, addresses and other free text stay in Vietnamese. Low-cardinality categorical fields (region, customer type, payment method, return reason, return status, promotion type, product category) get an English label alongside the original value, for the dashboard and an English-speaking audience.
 
 #### Data Volume
