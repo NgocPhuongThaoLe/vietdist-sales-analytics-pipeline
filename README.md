@@ -96,6 +96,7 @@ The warehouse must answer five groups of business questions (BR1–BR5). Each re
 | BR2 | Sales vs target | Sales managers | Did each rep and region hit their revenue, quantity and new-customer targets? How did the H2 re-plan (v2) change achievement compared with the original plan (v1)? | SRC01, SRC02, SRC07, SRC08 | v1.0 |
 | BR3 | Distributor service | Distribution operations | Which distributors get full and on-time deliveries? Where are fill rate and delays worst? Which distributors are inactive? | SRC05, SRC06, SRC04 | v1.0 |
 | BR4 | Returns | Sales managers, distribution operations | What share of sales comes back, for which products, customers and reasons? Are returns linked to orders that were never delivered? | SRC09, SRC01 | After v1.0 |
+| BR5 | Promotions | Sales managers | Did sales of covered products rise during each promotion? Did the promotion stay within budget? | SRC10, SRC01, SRC04 | After v1.0 |
 
 ### F. Database Design
 #### Fact and Dimension Grain
