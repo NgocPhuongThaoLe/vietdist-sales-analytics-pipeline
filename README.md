@@ -1,12 +1,17 @@
 # VietDist Data Pipeline
 
 ## Summary
+VietDist is an end-to-end data engineering and analytics project that runs locally.
+
+The pipeline loads Excel and CSV files into PostgreSQL and processes the data through three layers: Bronze for raw data, Silver for cleaned and standardised data, and Gold for reporting-ready data. Power BI Desktop connects to the Gold layer to report on sales performance and distribution.
+
 ## Project Status
-**Phase 0 – Source exploration (in progress).** All 10 sources profiled; cross-source checks partly done. Next: remaining Step 7 checks, then raw ingestion into PostgreSQL.
+
 
 ## Changelog
 | Date | Version | Changes |
 | --- | --- | --- |
+| 2026-11-17 | 0.1.2 | - Simplified B. Initial File Exploration.<br>- Added `notebooks/01_source_columns.ipynb` to list columns and inferred data types.<br>- Documented E. Business Requirements (BR1–BR5).<br> |
 | 2026-11-17 | 0.1.1 | - Completed profiling of SRC04, SRC06 and SRC07; filled column counts in Data Volume.|
 | 2026-11-16 | 0.1.0 | - Initial project setup and README overview.<br>- Project folder structure defined; source files stored locally in `data/raw/`.<br>- Added source exploration notebook.<br>- Documented B. Data Sources and Exploration: Source Inventory for all 10 files (grain, contents, keys).<br>- Documented C. Data Scope and Volume and data volume.<br>- Documented D. Known Data Quality Issues. |
 
@@ -27,26 +32,31 @@
 
 #### Initial File Exploration
 
-The [source exploration notebook](notebooks/01_source_exploration.ipynb) was used to inspect each source file's contents, row grain, and candidate keys for the Source Inventory.
+Used [source columns notebook](notebooks/01_source_columns.ipynb) to inspect column names and data types in the source files.
 
-| ID | File | Format | Grain (one row =) | Holds | Main keys |
-|---|---|---|---|---|---|
-| SRC01 | SRC01_sales_transactions.csv | CSV | One product line on a customer sales order | Sales fact: 119,101 lines / 50,000 orders / 21 cols, all 2024. Quantity, price, discount, gross & net amount, delivery & payment status. Also repeats dimension attributes (region, province, channel, product_category, order_month/quarter/year) | PK: `order_id` + `product_id` · FK: `customer_id` → SRC03, `product_id` → SRC04, `employee_id` → SRC07 |
-| SRC02 | SRC02_sales_target_plan.xlsx | XLSX (3 sheets) | One monthly target for one employee in one plan version | Sales targets (revenue, quantity, new customers). `Plan_v1_Original`: 1,332 rows = 111 emps × 12 months. `Plan_v2_Adjustment_H2`: 618 rows = 103 emps × 6 months (Jul–Dec). The 3 Area Managers have no target. `Summary` is a report sheet → not loaded, used for reconciliation | PK: `plan_version` + `employee_id` + `year` + `month` · FK: `employee_id` → SRC07 |
-| SRC03 | SRC03_customer_master.csv | CSV | One customer | 2,000 customers / 12 cols: name, type, channel, province, region, address, phone, tax_code, join_date, credit_limit, status | PK: `customer_id` |
-| SRC04 | SRC04_product_master.xlsx | XLSX (2 sheets) | One product (SKU) | 100 products / 10 cols (sheet `Products`): name, category (4), sub-category (17), unit, list price, cost price, weight, status, launch date. `Category_Summary` is a report sheet → not loaded, used for reconciliation | PK: `product_id` |
-| SRC05 | SRC05_distributor_orders.xlsx | XLSX | One product line on a distributor order | Distributor order fact: 35,945 lines / 8,000 orders / 21 cols. Qty ordered vs delivered, fill rate, list vs distributor price, expected vs actual delivery date, on-time flag, payment terms | PK: `order_id` + `product_id` · FK: `distributor_id` → SRC06, `product_id` → SRC04 |
-| SRC06 | SRC06_distributor_master.csv | CSV | One distributor | 138 distributors / 14 cols: name, tier (3), channel, province, region, contact person, phone, email, tax_code, join date, credit limit, status, assigned supervisor | PK: `distributor_id` · FK: `assigned_supervisor_id` → SRC07 `employee_id` |
-| SRC07 | SRC07_employee_master.xlsx | XLSX (3 sheets) | v1/v2: one employee per snapshot · Change_Log: one employee change event | 114 employees / 15 cols in two snapshots: `Employee_v1_StartYear` (effective 2024-01-01, all Active) and `Employee_v2_Adjustment` (effective 2024-07-01, with resign_date and transfer_note). `Change_Log`: 13 changes / 8 cols (8 resignations between 24 May and 18 Jun 2024, 5 region transfers) → source for SCD Type 2 | PK: `employee_id` + `version` (snapshots) · `employee_id` + `effective_date` (Change_Log) |
-| SRC08 | SRC08_territory_mapping.xlsx | XLSX | One customer assigned to a territory / sales rep | 1,843 customer-to-rep assignments. Covers 1,843 of 2,000 customers; reflects the start-of-year assignment only | PK: `customer_id` (`territory_id` is also unique) · FK: `customer_id` → SRC03, `employee_id` → SRC07 |
-| SRC09 | SRC09_return_transactions.csv | CSV | One returned product line | 3,665 returns / 14 cols: quantity, amount, reason, processing status. 3,564 distinct original orders | PK: `return_id` · FK: `original_order_id` + `product_id` → SRC01, `customer_id` → SRC03, `employee_id` → SRC07 |
-| SRC10 | SRC10_promotion_program.xlsx | XLSX | One promotion program | 40 promotions / 14 cols: type, target channel & region, dates, discount %, min qty, budget vs actual cost, status. `applicable_products` holds a pipe-delimited list of products | PK: `promotion_id` · FK: `applicable_products` → SRC04 (multi-valued, needs a bridge table) |
+| ID | File | Sheet | Cols | Columns (data type) |
+|---|---|---|---|---|
+| SRC01 | SRC01_sales_transactions.csv | – | 21 | `order_id` text, `order_date` text, `order_month` int, `order_quarter` int, `order_year` int, `customer_id` text, `region` text, `province` text, `channel` text, `employee_id` text, `product_id` text, `product_category` text, `quantity` int, `unit_price` int, `discount_pct` int, `discount_amount` float, `gross_amount` int, `net_amount` float, `delivery_status` text, `payment_method` text, `payment_status` text |
+| SRC02 | SRC02_sales_target_plan.xlsx | `Plan_v1_Original` / `Plan_v2_Adjustment_H2` | 13 | `plan_version` text, `version_date` text, `effective_from` text, `effective_to` text, `employee_id` text, `employee_name` text, `region` text, `team` text, `year` int, `month` int, `target_revenue` int, `target_quantity` int, `target_new_customers` int |
+| SRC03 | SRC03_customer_master.csv | – | 12 | `customer_id` text, `customer_name` text, `customer_type` text, `channel` text, `province` text, `region` text, `address` text, `phone` int, `tax_code` float, `join_date` text, `credit_limit` int, `status` text |
+| SRC04 | SRC04_product_master.xlsx | `Products` | 10 | `product_id` text, `product_name` text, `category` text, `sub_category` text, `unit` text, `unit_price` int, `cost_price` int, `weight_gram` int, `status` text, `launch_date` text |
+| SRC05 | SRC05_distributor_orders.xlsx | `Orders` | 21 | `order_id` text, `order_date` text, `order_month` int, `order_quarter` int, `distributor_id` text, `region` text, `channel` text, `product_id` text, `product_category` text, `qty_ordered` int, `qty_delivered` int, `fill_rate_pct` float, `unit_price_list` int, `distributor_price` int, `gross_amount` int, `delivered_amount` int, `expected_delivery_date` text, `actual_delivery_date` text, `ontime_delivery` text, `delivery_status` text, `payment_terms` text |
+| SRC06 | SRC06_distributor_master.csv | – | 14 | `distributor_id` text, `distributor_name` text, `tier` text, `channel` text, `province` text, `region` text, `contact_person` text, `phone` int, `email` text, `tax_code` int, `join_date` text, `credit_limit` int, `status` text, `assigned_supervisor_id` text |
+| SRC07 | SRC07_employee_master.xlsx | `Employee_v1_StartYear` | 15 | `employee_id` text, `full_name` text, `gender` text, `date_of_birth` text, `join_date` text, `position` text, `region` text, `team` text, `email` text, `phone` int, `status` text, `version` text, `effective_date` text, `resign_date` float, `transfer_note` float |
+| SRC07 | SRC07_employee_master.xlsx | `Employee_v2_Adjustment` | 15 | Same columns as v1; `resign_date` text, `transfer_note` text |
+| SRC07 | SRC07_employee_master.xlsx | `Change_Log` | 8 | `employee_id` text, `employee_name` text, `change_type` text, `effective_date` text, `old_region` text, `new_region` text, `old_team` text, `new_team` text |
+| SRC08 | SRC08_territory_mapping.xlsx | `Sheet1` | 8 | `territory_id` text, `employee_id` text, `customer_id` text, `region` text, `team` text, `effective_date` text, `expiry_date` text, `version` text |
+| SRC09 | SRC09_return_transactions.csv | – | 14 | `return_id` text, `original_order_id` text, `return_date` text, `return_month` int, `customer_id` text, `employee_id` text, `product_id` text, `region` text, `province` text, `return_quantity` int, `unit_price` int, `return_amount` int, `return_reason` text, `status` text |
+| SRC10 | SRC10_promotion_program.xlsx | `Sheet1` | 14 | `promotion_id` text, `promotion_name` text, `promotion_type` text, `target_channel` text, `target_region` text, `start_date` text, `end_date` text, `applicable_products` text, `discount_pct` int, `min_order_quantity` int, `budget_vnd` int, `actual_cost_vnd` int, `status` text, `created_by` text |
+
 
 ### C. Data Scope and Volume
 #### Data Scope
 - One company, Vietnam only, currency VND.
-- Period: 01/01/2024 to 31/12/2024.
+- Period: orders, targets and promotions cover 01/01/2024 to 31/12/2024. Delivery and return dates for late-2024 orders may fall in early 2025 *(to confirm)*; `dim_date` covers every date found in the facts.
 - Sales to retail customers (SRC01) and orders from distributors (SRC05) are separate processes and get separate fact tables.
+- The data is simulated, one-off sample data: one export per file, no history before 2024. Monthly arrival is simulated by splitting SRC01 into monthly files.
+- Out of scope for v1.0: promotion analysis (SRC10, BR5). SRC10 is still loaded into Bronze and Silver.
 - Language: the data comes from a Vietnamese company, so text values are in Vietnamese with diacritics (e.g. region `Miền Nam`, payment method `Công nợ`, return status `Đã xử lý`, customer and employee names). Column names are already in English.
   - All files are read and stored as UTF-8, and text is normalised to Unicode NFC in staging so that visually identical values match in joins and group-bys.
   - Names, addresses and other free text stay in Vietnamese. Low-cardinality categorical fields (region, customer type, payment method, return reason, return status, promotion type, product category) get an English label alongside the original value, for the dashboard and an English-speaking audience.
@@ -62,17 +72,18 @@ The [source exploration notebook](notebooks/01_source_exploration.ipynb) was use
 | SRC05 | SRC05_distributor_orders.xlsx | Fact | Orders | 35,945 (8,000 orders) | 21 | 3.53 |
 | SRC06 | SRC06_distributor_master.csv | Dimension | – | 138 | 14 | 0.03 |
 | SRC07 | SRC07_employee_master.xlsx | Dimension | Employee_v1_StartYear, Employee_v2_Adjustment, Change_Log | 241 (114 + 114 + 13) | 15 / 15 / 8 | 0.03 |
-| SRC08 | SRC08_territory_mapping.xlsx | Mapping | Sheet1 | 1,843 | TBC | 0.07 |
+| SRC08 | SRC08_territory_mapping.xlsx | Mapping | Sheet1 | 1,843 | 8 | 0.07 |
 | SRC09 | SRC09_return_transactions.csv | Fact | – | 3,665 | 14 | 0.49 |
 | SRC10 | SRC10_promotion_program.xlsx | Dimension | Sheet1 | 40 | 14 | 0.01 |
 | **Total** | **10 files** | | | **165,023** | | **25.3** |
 
-Report sheets (`Summary` in SRC02, `Category_Summary` in SRC04) are excluded from the row counts and are not loaded: they hold aggregates that can be recomputed from the detail sheets. They are used only as reconciliation checks.
+Report sheets (`Summary` in SRC02, `Category_Summary` in SRC04) are excluded from the row counts and are not loaded. They hold aggregates that can be recomputed from the detail sheets, so they are used only as reconciliation checks.
 
 **Observations**
-- The three transaction facts (SRC01, SRC05, SRC09) hold 158,711 rows, about 96% of all data. SRC01 alone is 82% of the size on disk.
+- The three transaction facts (SRC01, SRC05, SRC09) hold 158,711 rows, about 96% of all data. SRC01 alone is about 82% of the size on disk.
 - The dimensions are small: from 40 promotions to 2,000 customers.
-- At about 165k rows and 25 MB, the whole dataset fits in memory and a full reload takes seconds. Incremental loading isn't needed for performance, but it is still implemented for SRC01 to show the pattern for a growing sales table.
+- At about 165k rows and 25 MB, the whole dataset fits in memory and a full reload takes seconds. Incremental loading is not needed for performance, but it is still implemented for SRC01 to show the pattern for a growing sales table.
+
 
 ### E. Business Requirements
 The warehouse must answer five groups of business questions (BR1–BR5). Each requirement decides which facts, dimensions and marts are built in section F. BR1–BR3 are the priority for v1.0 (the three core Power BI pages); BR4–BR5 follow after v1.0.
