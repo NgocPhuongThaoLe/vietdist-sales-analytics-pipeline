@@ -53,10 +53,8 @@ Used [source columns notebook](notebooks/01_source_columns.ipynb) to inspect col
 ### C. Data Scope and Volume
 #### Data Scope
 - One company, Vietnam only, currency VND.
-- Period: orders, targets and promotions cover 01/01/2024 to 31/12/2024. Delivery and return dates for late-2024 orders may fall in early 2025 *(to confirm)*; `dim_date` covers every date found in the facts.
+- Period: 01/01/2024 to 31/12/2024
 - Sales to retail customers (SRC01) and orders from distributors (SRC05) are separate processes and get separate fact tables.
-- The data is simulated, one-off sample data: one export per file, no history before 2024. Monthly arrival is simulated by splitting SRC01 into monthly files.
-- Out of scope for v1.0: promotion analysis (SRC10, BR5). SRC10 is still loaded into Bronze and Silver.
 - Language: the data comes from a Vietnamese company, so text values are in Vietnamese with diacritics (e.g. region `Miền Nam`, payment method `Công nợ`, return status `Đã xử lý`, customer and employee names). Column names are already in English.
   - All files are read and stored as UTF-8, and text is normalised to Unicode NFC in staging so that visually identical values match in joins and group-bys.
   - Names, addresses and other free text stay in Vietnamese. Low-cardinality categorical fields (region, customer type, payment method, return reason, return status, promotion type, product category) get an English label alongside the original value, for the dashboard and an English-speaking audience.
