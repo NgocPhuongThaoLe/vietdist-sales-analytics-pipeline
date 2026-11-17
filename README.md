@@ -11,8 +11,7 @@ The pipeline loads Excel and CSV files into PostgreSQL and processes the data th
 ## Changelog
 | Date | Version | Changes |
 | --- | --- | --- |
-| 2026-11-17 | 0.1.2 | - Simplified B. Initial File Exploration.<br>- Added `notebooks/01_source_columns.ipynb` to list columns and inferred data types.<br>- Documented E. Business Requirements (BR1–BR5).<br> |
-| 2026-11-17 | 0.1.1 | - Completed profiling of SRC04, SRC06 and SRC07; filled column counts in Data Volume.|
+| 2026-11-17 | 0.1.1 | - Completed inital exploration<br>- Simplified B. Initial File Exploration.<br>- Added `notebooks/01_source_columns.ipynb` to list columns and inferred data types.<br>- Documented E. Business Requirements (BR1–BR5).<br>- Designed the data model<br>- Documented the ELT architecture and the data flow.|
 | 2026-11-16 | 0.1.0 | - Initial project setup and README overview.<br>- Project folder structure defined; source files stored locally in `data/raw/`.<br>- Added source exploration notebook.<br>- Documented B. Data Sources and Exploration: Source Inventory for all 10 files (grain, contents, keys).<br>- Documented C. Data Scope and Volume and data volume.<br>- Documented D. Known Data Quality Issues. |
 
 ## I. Design
@@ -96,11 +95,50 @@ The warehouse must answer five groups of business questions (BR1–BR5). Each re
 | BR4 | Returns | Sales managers, distribution operations | What share of sales comes back, for which products, customers and reasons? Are returns linked to orders that were never delivered? | SRC09, SRC01 | After v1.0 |
 | BR5 | Promotions | Sales managers | Did sales of covered products rise during each promotion? Did the promotion stay within budget? | SRC10, SRC01, SRC04 | After v1.0 |
 
-### F. Database Design
-#### Fact and Dimension Grain
-#### Relationships and Historical Tracking
-#### Reporting Marts
+### F. Data model - star schema overview
+
+
+| Table | Type | Description | SCD type | 
+|---|---|---|---|
+| `dim_date` | Dimension | Calendar: day, week, month, quarter, year, FY | N/A (static) | 
+| `dim_employees` | Dimension | Sales reps + history of region/team changes and resignations (from `Change_Log`) | SCD Type 2 | 
+| `dim_customers` | Dimension | Customers: type, territory, tax code, phone | SCD Type 1 | 
+| `dim_products` | Dimension | Products: category, brand, unit, list price, cost price | SCD Type 1 |
+| `dim_distributors` | Dimension | Distributors: region, assigned supervisor | SCD Type 2 | 
+| `fact_sales` | Fact | Sales transactions. Grain: 1 order line (`order_id` + `product_id`) | – | 
+| `fact_targets` | Fact | Sales targets. Grain: employee × month × version (v1 full year, v2 H2 re-plan) | Temporal (versioned) | 
+| `fact_returns` | Fact | Returned goods. Grain: 1 returned line, linked to the original sale | – | 
+| `fact_distributor_orders` | Fact | Distributor orders. Grain: 1 order line; ordered vs delivered qty, promised vs actual date | – | 
+| `mart_sales_vs_target` | Mart | Monthly actual vs target, credited to the rep/region valid on the order date | – | 
+| `mart_distributor_performance` | Mart | Fill rate, on-time delivery %, inactive distributors | – | 
+
+  
 ### G. ELT Architecture
+
+#### ELT Diagram & Taskflow
+
+![VietDist three-layer data architecture](images/vietdist_architecture_v1.png)
+
+Three-layer ELT on PostgreSQL (Docker): **Raw (Bronze) → Staging (Silver) → Warehouse (Gold)**.
+
+| Step | Tool | What happens |
+|---|---|---|
+| **Extract** | Python, pandas | Read 10 CSV/XLSX files from `data/raw/` |
+| **Load** | Python → PostgreSQL | Write each file as-is to the `raw` schema with metadata columns (`_source_file`, `_loaded_at`, `_batch_id`); log every run in `raw.ingest_log` |
+| **Transform** | dbt | Build `staging` views (clean, type, test), then `dwh` tables (star schema, SCD2 snapshot for employees) and marts |
+| **Serve** | Power BI | Import marts into 3 report pages |
+
+
+#### Data Flow Diagram
+
+![VietDist data flow](images/vietdist_data_flow_v1.png)
+
+Table-level flow from the 10 source files to Power BI:
+- **Raw:** one table per source file, loaded as-is.
+- **Staging:** one model per source; fixes data-type issues (phone, tax_code as text), unions sales-target versions v1 + v2, splits promotion products.
+- **Warehouse:** 6 dims, 4 facts and 1 bridge. `dim_employee` is SCD2; facts carry data-quality flags (`is_post_resign_sale`, `is_off_territory`, `is_return_on_undelivered`).
+- **Marts:** one per Power BI page.
+
 
 
 ## II. Configuration
