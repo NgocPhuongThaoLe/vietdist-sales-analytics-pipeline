@@ -74,69 +74,24 @@ Report sheets (`Summary` in SRC02, `Category_Summary` in SRC04) are excluded fro
 - The dimensions are small: from 40 promotions to 2,000 customers.
 - At about 165k rows and 25 MB, the whole dataset fits in memory and a full reload takes seconds. Incremental loading isn't needed for performance, but it is still implemented for SRC01 to show the pattern for a growing sales table.
 
-### D. Known Data Quality Issues
+### E. Business Requirements
+The warehouse must answer five groups of business questions (BR1–BR5). Each requirement decides which facts, dimensions and marts are built in section F. BR1–BR3 are the priority for v1.0 (the three core Power BI pages); BR4–BR5 follow after v1.0.
 
-*Status as of 17 Nov 2026. This section will be updated as profiling continues.*
+#### Business Requirements
 
-The [source exploration notebook](notebooks/01_source_exploration.ipynb) was used to profile data quality: data types, null rates, duplicate checks on candidate keys, foreign-key matches between sources, and cross-source checks. So far the data is clean at the key level: no orphan foreign keys in any fact table and no nulls in key columns. The issues found are about types, consistency, history, table design and coverage. Each one will be handled in the staging layer and covered by a data test.
-
-#### Confirmed issues
-
-| # | Source | Issue | Evidence | Planned handling | Planned test |
+| ID | Requirement | Main users | Example questions | Sources | Priority |
 |---|---|---|---|---|---|
-| 1 | SRC03, SRC06, SRC07 | `phone` stored as an integer, leading 0 lost; length differs by source | dtype `int64`. SRC03/SRC06: 10 digits (landline, e.g. `2868978194`); SRC07: 9 digits (mobile, e.g. `928728463`) | Read as text; add back the leading 0 | Regex `^0\d{9,10}$` |
-| 2 | SRC03, SRC06 | `tax_code` stored as a number, with a different type in each source; mostly missing in SRC03 | SRC03: `float64`, shown as `2.416011e+09`, 1,035 of 2,000 null (51.7%). SRC06: `int64`, no nulls | Read as text in both; keep nulls; label "Unknown" in reports | Digits only when not null |
-| 3 | All | Dates stored as text | dtype `object` for every date column | Cast to `DATE` in staging | Type check; dates within expected range |
-| 4 | SRC01, SRC05 | Order-level attributes differ between lines of the same order | `ORD0010002`: `delivery_status` Delivered / Delivering, `payment_method` Công nợ / Tiền mặt. `DORD0020001`: `payment_terms` NET30 / NET15 / NET45 | Keep at line level; derive an order-level status in a mart | Accepted values on each status column |
-| 5 | SRC01, SRC05, SRC09 | Fact tables repeat dimension attributes | Month, quarter, year, region, province, channel, product category stored in the facts | Drop in staging; take from dimension tables | Columns not present in fact tables |
-| 6 | SRC01, SRC07 | Sales recorded under employees after their resignation date | 547 lines for all 8 resigned employees, from the day after `resign_date` until 2024-06-30; none after the 2024-07-01 mid-year update, i.e. customers stayed assigned to the departed rep until the update (process lag) | Keep in fact; add flag `is_post_resign_sale`. Company revenue unchanged; excluded from rep performance in marts (see Assumptions Log) | Count of flagged rows = 547 (warn if it changes) |
-| 7 | SRC07 | `Change_Log.effective_date` is the recording date, not the resignation date | All 13 rows dated 2024-07-01; the 8 resignations have `resign_date` between 2024-05-24 and 2024-06-18 in `Employee_v2_Adjustment` | SCD2: `valid_to` = `resign_date` for resignations; `valid_from` = 2024-07-01 for region transfers (see Assumptions Log) | `valid_to` = `resign_date` for resigned employees |
-| 8 | SRC02, SRC07 | v1 targets exist for months after an employee resigned | 2 rows: June targets for EMP1054 and EMP1100 (both resigned in May) | Exclude target months after the resignation month from attainment | No target month after the resignation month |
-| 9 | SRC08 | Territory mapping has no effective dates | One row per customer, no valid-from/to columns, while SRC07 `Change_Log` records 5 region transfers on 2024-07-01 | Take the rep's region from `dim_employee` (SCD Type 2) valid on the order date | Rep region in fact = region valid on order date |
-| 10 | SRC08, SRC03 | Not every customer has an assigned rep | 1,843 mappings for 2,000 customers; 157 unmapped | Map to an "Unassigned" member in reports | Count of unmapped customers (warn) |
-| 11 | SRC10 | `applicable_products` is a pipe-delimited list | e.g. `PRD0017\|PRD0040` | Split into `bridge_promotion_product` | Every `product_id` exists in `dim_product` |
-| 12 | SRC10 | `"All"` used as a value instead of a list | `target_region` and `target_channel` contain `All` | Treat as a wildcard when matching promotions to sales | Accepted values (`All` + valid regions/channels) |
-| 13 | All | Vietnamese text with diacritics can be stored in different Unicode forms | Text values such as `Miền Nam`, `Đã xử lý` | Read as UTF-8; normalise to NFC | Text equals its NFC form |
+| BR1 | Sales performance | Sales managers | What is net revenue by month, region, channel, category and product? Which products and customers grow or decline month over month? What margin do we make? | SRC01, SRC03, SRC04 | v1.0 |
+| BR2 | Sales vs target | Sales managers | Did each rep and region hit their revenue, quantity and new-customer targets? How did the H2 re-plan (v2) change achievement compared with the original plan (v1)? | SRC01, SRC02, SRC07, SRC08 | v1.0 |
+| BR3 | Distributor service | Distribution operations | Which distributors get full and on-time deliveries? Where are fill rate and delays worst? Which distributors are inactive? | SRC05, SRC06, SRC04 | v1.0 |
+| BR4 | Returns | Sales managers, distribution operations | What share of sales comes back, for which products, customers and reasons? Are returns linked to orders that were never delivered? | SRC09, SRC01 | After v1.0 |
 
-#### Coverage findings and reconciliations (not errors)
-
-| Finding | Size |
-|---|---|
-| Customers who never bought | 198 of 2,000 |
-| Customers assigned to a rep but never bought | 41 |
-| Products never sold, ordered or returned | 8 of 100 |
-| Distributors who never ordered | 13 of 138 |
-| Employees with no sales | 6 of 114 |
-| Employees with no sales target (Area Managers, team `Management`) | 3 of 114 |
-| Employees with no H2 target (v2 plan): 3 Area Managers + 8 resigned | 11 of 114 |
-| Promotions over budget | e.g. PROMO001: 296M vs 278M VND budget |
-| Resignations reconcile: `Change_Log` = v2 `resign_date` = SRC02 `Summary` | 8 = 8 = 8 ✓ |
-| Employee changes reconcile: v1 → v2 differences = `Change_Log` rows (same employees) | 13 = 13 ✓ |
-| Product count reconciles: `Products` rows = `Category_Summary.total_skus` | 100 = 100 ✓ |
-
-#### Still to check
-
-These need more checks in the notebook. They will move to the tables above, with sizes, once verified.
-
-- Overview of SRC08 (column count and types).
-- Sales where the selling rep is not the customer's assigned rep (SRC01 × SRC08).
-- Returns linked to orders that still have cancelled or delivering lines (SRC09 × SRC01).
-- Whether `region` / `province` in SRC01 describe the customer or the rep (SRC01 × SRC03 × SRC07).
-- Whether the 8 inactive products are the 8 never sold, and whether inactive distributors are the 13 that never ordered (SRC04 × SRC01, SRC06 × SRC05).
-- Whether `assigned_supervisor_id` in SRC06 always points to a Sales Supervisor (SRC06 × SRC07).
-- Grain checks (`check_grain`) on SRC01, SRC02 and SRC05, and the `check_fk` from SRC09 to SRC01.
-
-
-### E. Business Requirements and KPIs
-### F. Load Schedule and Load Strategies
-### G. ELT Architecture
-### H. Dimensional Model
+### F. Database Design
 #### Fact and Dimension Grain
 #### Relationships and Historical Tracking
 #### Reporting Marts
-### I. DAG Design
-### J. Design Decisions and Trade-offs
-### K. Implementation Plan
+### G. ELT Architecture
+
 
 ## II. Configuration
 ### A. Prerequisites
