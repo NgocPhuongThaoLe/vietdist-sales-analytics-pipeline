@@ -3,7 +3,9 @@
 ## Summary
 VietDist is an end-to-end data engineering and analytics project that runs locally.
 
-The pipeline loads Excel and CSV files into PostgreSQL and processes the data through three layers: Bronze for raw data, Silver for cleaned and standardised data, and Gold for reporting-ready data. Power BI Desktop connects to the Gold layer to report on sales performance and distribution.
+The pipeline loads Excel and CSV files into PostgreSQL and processes the data through three layers: Bronze for raw data, Silver for cleaned and standardised data, and Gold for reporting-ready data. 
+
+Power BI Desktop connects to the Gold layer to report on sales performance and distribution.
 
 ## Project Status
 
@@ -26,7 +28,7 @@ The pipeline loads Excel and CSV files into PostgreSQL and processes the data th
 - **Number of files:** 10
 - **File types:** CSV and XLSX
 - **Data sources:** Simulated exports from the company's ERP, CRM, and HR systems
-- **Data period:** 2024
+- **Data period:** 01/01/2024 to 31/12/2024
 - **Total size:** Approximately 25 MB
 
 #### Initial File Exploration
@@ -142,16 +144,327 @@ Table-level flow from the 10 source files to Power BI:
 
 
 ## II. Configuration
+
+This section covers required tools, repository structure, environment variables, PostgreSQL setup, and source file preparation.
+
+---
+
 ### A. Prerequisites
+
+| Tool | Version (tested) | Used for |
+|---|---|---|
+| [Git](https://git-scm.com/) | 2.40+ | Cloning the repository |
+| [Docker Desktop](https://www.docker.com/products/docker-desktop/) (incl. Docker Compose v2) | 4.x / Compose 2.20+ | Running PostgreSQL in a container |
+| [Python](https://www.python.org/downloads/) | 3.11 – 3.13 | Python loaders + dbt Core |
+| [dbt Core](https://docs.getdbt.com/docs/core/installation-overview) + `dbt-postgres` | 1.11+ (below 2.0) | Transformations (staging → warehouse), tests, snapshot, docs |
+| [Power BI Desktop](https://powerbi.microsoft.com/desktop/) | Latest | Report layer (Windows only) |
+| A SQL client (optional) – DBeaver, pgAdmin or `psql` | Any | Inspecting the database |
+
+**Hardware:** ~2 GB free RAM for Docker and ~1 GB free disk space (raw data is ~25 MB; the database with all three layers is a few hundred MB).
+
+Check that everything is installed:
+
+```bash
+git --version
+docker --version
+docker compose version
+python --version        # should print 3.11.x – 3.13.x
+```
+
+> Docker only runs PostgreSQL. The Python loaders and dbt run on your machine, so your local Python version matters. dbt Core 1.8–1.9 does not support Python 3.13. If you use 3.13, you need dbt Core 1.11 or newer.
+
+Create a virtual environment and install dependencies:
+
+```bash
+python -m venv .venv
+.venv\Scripts\activate          # Windows  (macOS/Linux: source .venv/bin/activate)
+pip install -r requirements.txt
+dbt --version                   # should show core 1.11+ and the postgres plugin
+```
+
+---
 
 ### B. Repository Structure
 
+```text
+vietdist/
+├── data/
+│   └── raw/                        # Source files go here (git-ignored, see section E)
+│       ├── SRC01_sales_transactions.csv
+│       ├── SRC02_sales_target_plan.xlsx
+│       ├── ...
+│       └── SRC10_promotion_program.xlsx
+│
+├── docker/
+│   └── postgres/
+│       └── init_db.sql             # Creates schemas raw, staging, dwh + ingest_log + roles
+│
+├── loaders/                        # Layer 1 – Extract & Load (Python)
+│   ├── config.py                   # Reads .env, maps each source file → raw table
+│   ├── db.py                       # SQLAlchemy engine / connection helper
+│   ├── load_raw.py                 # Entry point: loads all 10 sources into schema raw
+│   └── ingest_log.py               # Writes one row per load to raw.ingest_log
+│
+├── dbt/
+│   └── vietdist/                   # Layers 2 & 3 – Transform (dbt Core)
+│       ├── dbt_project.yml
+│       ├── profiles.yml            # Reads connection details from env vars (no secrets)
+│       ├── models/
+│       │   ├── staging/            # 1 view per source (stg_*) + sources.yml + tests
+│       │   └── dwh/
+│       │       ├── dims/           # 6 dimensions
+│       │       ├── facts/          # 4 facts
+│       │       ├── bridges/        # bridge_promotion_product
+│       │       └── marts/          # 3 marts for Power BI
+│       ├── snapshots/              # dim_employee SCD Type 2
+│       ├── tests/                  # Singular (custom SQL) tests
+│       └── macros/
+│
+├── powerbi/
+│   └── vietdist_report.pbix        # 3 report pages, imports from schema dwh
+│
+├── docs/
+│   ├── architecture.png            # Three-layer architecture diagram
+│   ├── data_dictionary.md
+│   ├── data_issues.md
+│   └── assumptions_log.md
+│
+├── docker-compose.yml              # PostgreSQL service
+├── requirements.txt                # Python + dbt dependencies
+├── .env.example                    # Template for environment variables
+├── .gitignore
+└── README.md
+```
+
+| Folder | Layer in the architecture |
+|---|---|
+| `data/raw/` | Source files |
+| `loaders/` | Python loaders → **Layer 1 Raw (Bronze)** |
+| `dbt/vietdist/models/staging/` | **Layer 2 Staging (Silver)** |
+| `dbt/vietdist/models/dwh/` + `snapshots/` | **Layer 3 Warehouse (Gold)** |
+| `powerbi/` | Power BI reports |
+
+---
+
 ### C. Environment Variables
+
+All connection details live in one `.env` file in the project root. It is read by **Docker Compose** (to create the database), the **Python loaders** (via `python-dotenv`) and **dbt** (via `env_var()` in `profiles.yml`). The real `.env` is listed in `.gitignore` and must never be committed.
+
+**1. Create your `.env` from the template:**
+
+```bash
+cp .env.example .env          # macOS / Linux
+copy .env.example .env        # Windows (cmd)
+```
+
+**2. Edit the values if needed (`.env.example`):**
+
+```dotenv
+# ---------- PostgreSQL (Docker) ----------
+POSTGRES_HOST=localhost
+POSTGRES_PORT=5432
+POSTGRES_DB=vietdist
+POSTGRES_USER=vietdist_admin
+POSTGRES_PASSWORD=change_me_please
+
+# ---------- Loaders ----------
+RAW_DATA_DIR=./data/raw
+RAW_SCHEMA=raw
+LOAD_MODE=full_refresh          # full_refresh | append
+
+# ---------- dbt ----------
+DBT_PROFILES_DIR=./dbt/vietdist
+DBT_TARGET=dev
+DBT_THREADS=4
+```
+
+| Variable | Description | Default |
+|---|---|---|
+| `POSTGRES_HOST` | Database host. `localhost` when running loaders/dbt on your machine | `localhost` |
+| `POSTGRES_PORT` | Host port mapped to the container. Change it (e.g. `5433`) if you already have Postgres installed locally | `5432` |
+| `POSTGRES_DB` | Database name | `vietdist` |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` | Admin user created when the container starts for the first time | – |
+| `RAW_DATA_DIR` | Folder the loaders read source files from | `./data/raw` |
+| `RAW_SCHEMA` | Target schema for Layer 1 | `raw` |
+| `LOAD_MODE` | `full_refresh` truncates and reloads each raw table; `append` adds rows (used later for incremental loads) | `full_refresh` |
+| `DBT_PROFILES_DIR` | Tells dbt to use the project's own `profiles.yml` instead of `~/.dbt/` | `./dbt/vietdist` |
+| `DBT_TARGET` | dbt target (output) to use | `dev` |
+| `DBT_THREADS` | Number of models dbt builds in parallel | `4` |
+
+**3. dbt reads the same variables – `dbt/vietdist/profiles.yml`:**
+
+```yaml
+vietdist:
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST') }}"
+      port: "{{ env_var('POSTGRES_PORT') | int }}"
+      dbname: "{{ env_var('POSTGRES_DB') }}"
+      user: "{{ env_var('POSTGRES_USER') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD') }}"
+      schema: staging            # default schema; dwh models override it in dbt_project.yml
+      threads: "{{ env_var('DBT_THREADS', '4') | int }}"
+```
+
+> dbt does not read `.env` files by itself. Load the variables into your shell before running dbt:
+> - macOS / Linux: `set -a && source .env && set +a`
+> - Windows PowerShell: `Get-Content .env | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object { $k,$v = $_ -split '=',2; [Environment]::SetEnvironmentVariable($k.Trim(), $v.Split('#')[0].Trim()) }`
+
+---
 
 ### D. PostgreSQL Setup
 
+PostgreSQL runs in Docker, so there is nothing to install on your machine. On first start the container runs `docker/postgres/init_db.sql`, which creates the three schemas and the ingest log.
+
+**1. `docker-compose.yml`:**
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    container_name: vietdist_postgres
+    env_file: .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./docker/postgres/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  pg_data:
+```
+
+**2. `docker/postgres/init_db.sql`:**
+
+```sql
+-- Three-layer architecture
+CREATE SCHEMA IF NOT EXISTS raw;       -- Layer 1: Bronze (Python loaders)
+CREATE SCHEMA IF NOT EXISTS staging;   -- Layer 2: Silver (dbt views)
+CREATE SCHEMA IF NOT EXISTS dwh;       -- Layer 3: Gold  (dbt star schema + marts)
+CREATE SCHEMA IF NOT EXISTS snapshots; -- dbt snapshot (dim_employee SCD2)
+
+-- One row per file load, written by the Python loaders
+CREATE TABLE IF NOT EXISTS raw.ingest_log (
+    ingest_id      BIGSERIAL PRIMARY KEY,
+    batch_id       UUID         NOT NULL,
+    source_file    TEXT         NOT NULL,
+    sheet_name     TEXT,
+    target_table   TEXT         NOT NULL,
+    rows_loaded    INTEGER,
+    status         TEXT         NOT NULL CHECK (status IN ('success', 'failed')),
+    error_message  TEXT,
+    started_at     TIMESTAMPTZ  NOT NULL,
+    finished_at    TIMESTAMPTZ
+);
+
+-- Read-only role for Power BI
+CREATE ROLE powerbi_reader WITH LOGIN PASSWORD 'change_me_reader';
+GRANT CONNECT ON DATABASE vietdist TO powerbi_reader;
+GRANT USAGE ON SCHEMA dwh TO powerbi_reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA dwh GRANT SELECT ON TABLES TO powerbi_reader;
+```
+
+**3. Start the database and check it is healthy:**
+
+```bash
+docker compose up -d
+docker compose ps                          # STATUS should show "healthy"
+docker exec -it vietdist_postgres psql -U vietdist_admin -d vietdist -c "\dn"
+```
+
+Expected schemas: `raw`, `staging`, `dwh`, `snapshots`, `public`.
+
+**4. Connection details (SQL client / Power BI):**
+
+| Setting | Value |
+|---|---|
+| Host | `localhost` |
+| Port | value of `POSTGRES_PORT` (default `5432`) |
+| Database | `vietdist` |
+| User | `vietdist_admin` (full access) or `powerbi_reader` (read-only, schema `dwh`) |
+
+**Useful commands:**
+
+| Command | What it does |
+|---|---|
+| `docker compose stop` | Stops the container, keeps the data |
+| `docker compose down` | Removes the container, keeps the data (volume `pg_data`) |
+| `docker compose down -v` | Removes the container **and all data** – `init_db.sql` runs again on next `up` |
+
+> `init_db.sql` only runs when the volume is empty. If you change it, run `docker compose down -v` and `docker compose up -d` to apply it.
+
+---
+
 ### E. Source Access and File Formats
 
+**1. Access**
+
+The source data is a synthetic dataset for a fictional Vietnamese FMCG distributor (VietDist), covering calendar year 2024. It contains 10 files (~25 MB) delivered as one zip archive. The raw files are **not committed** to Git (`data/raw/*` is in `.gitignore`).
+
+To get the data:
+1. Download `vietdist_sample_data.zip` from *[add link – e.g. GitHub Release asset]*.
+2. Extract it so the files sit directly in `data/raw/` (no sub-folder).
+3. Do not rename the files – the loaders match them by name.
+
+**2. Source files**
+
+| ID | File | Format | Sheet(s) loaded | Rows | Raw table |
+|---|---|---|---|---|---|
+| SRC01 | `SRC01_sales_transactions.csv` | CSV | – | 119,101 lines (50,000 orders) | `raw.src01_sales_transactions` |
+| SRC02 | `SRC02_sales_target_plan.xlsx` | XLSX | v1, v2 (skip `Summary`) | 1,332 + 618 | `raw.src02_sales_target_plan` |
+| SRC03 | `SRC03_customer_master.csv` | CSV | – | 2,000 | `raw.src03_customer_master` |
+| SRC04 | `SRC04_product_master.xlsx` | XLSX | Products (skip `Category_Summary`) | 100 | `raw.src04_product_master` |
+| SRC05 | `SRC05_distributor_orders.xlsx` | XLSX | Orders | 35,945 lines (8,000 orders) | `raw.src05_distributor_orders` |
+| SRC06 | `SRC06_distributor_master.csv` | CSV | – | 138 | `raw.src06_distributor_master` |
+| SRC07 | `SRC07_employee_master.xlsx` | XLSX | v1, v2, Change_Log | 114 + 114 + 13 | `raw.src07_employee_master`, `raw.src07_employee_change_log` |
+| SRC08 | `SRC08_territory_mapping.xlsx` | XLSX | Mapping | 1,843 | `raw.src08_territory_mapping` |
+| SRC09 | `SRC09_return_transactions.csv` | CSV | – | 3,665 | `raw.src09_return_transactions` |
+| SRC10 | `SRC10_promotion_program.xlsx` | XLSX | Promotions | 40 | `raw.src10_promotion_program` |
+
+> Sheet names for single-sheet files are placeholders – match them to the actual workbook names in `loaders/config.py`.
+
+**3. Format rules the loaders follow**
+
+| Rule | Detail |
+|---|---|
+| Encoding | CSV files are read as **UTF-8** (Vietnamese diacritics). Text is normalised to Unicode **NFC** in staging. |
+| Delimiter | CSV uses comma `,`; first row is the header. |
+| Excel | Only `.xlsx` is supported (read with `openpyxl`). Summary sheets (`Summary`, `Category_Summary`) are skipped. |
+| Versioned sheets | SRC02 and SRC07 have `v1` / `v2` sheets. Both are loaded into the same raw table with a `sheet_name` column; staging decides which version is used. |
+| Data types in Raw | **Every column is loaded as `TEXT`** – nothing is cast in Layer 1. This keeps values such as `phone` and `tax_code` exactly as delivered; casting and cleaning happen in dbt staging. |
+| Dates | Single format in the source (`YYYY-MM-DD`); parsed in staging. |
+| Currency | Amounts are in **VND**, no decimals. |
+| Column names | Converted to `snake_case` on load. |
+
+**4. Metadata columns added to every raw table**
+
+| Column | Type | Description |
+|---|---|---|
+| `_batch_id` | UUID | Same ID for all files in one run; joins to `raw.ingest_log.batch_id` |
+| `_source_file` | TEXT | Original file name |
+| `_sheet_name` | TEXT | Excel sheet (NULL for CSV) |
+| `_row_number` | INTEGER | Row position in the source file, for tracing issues back |
+| `_loaded_at` | TIMESTAMPTZ | Load timestamp |
+
+**5. Known data issues to be aware of** (full list in `docs/data_issues.md`)
+
+- `SRC03.phone` was saved as a number, so the leading `0` is lost; `tax_code` is 52% null and stored as a float. Both are kept as text in raw and fixed in staging.
+- `SRC08` territory mapping reflects only the v1 assignments and is not updated for the July 2024 transfers; 157 customers are unmapped.
+- `SRC10.applicable_products` is a pipe-delimited list (`P001|P002|…`) and is split into `bridge_promotion_product`.
+- Derived columns in SRC01 (order month/quarter/year, region, category) are dropped in staging and taken from the dimensions instead.
+  
 ## III. Development
 
 ### A. Bronze Layer
