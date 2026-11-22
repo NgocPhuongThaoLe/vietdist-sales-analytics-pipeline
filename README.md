@@ -13,6 +13,8 @@ Power BI Desktop connects to the Gold layer to report on sales performance and d
 ## Changelog
 | Date | Version | Changes |
 | --- | --- | --- |
+| 2026-11-22 | 0.1.3 | - Set up the project structure for PostgreSQL, Python loaders, dbt, and Power BI.<br>- Added Docker Compose, database initialization, and environment configuration files.<br>- Updated the README with the local setup steps and repository layout. |
+| 2026-11-21 | 0.1.2 | - Added the Configuration and Setup section to the README.<br>- Configured dbt to read PostgreSQL connection settings from environment variables.<br>- Documented how to load `.env` variables and verify the connection with `dbt debug`. |
 | 2026-11-17 | 0.1.1 | - Completed inital exploration<br>- Simplified B. Initial File Exploration.<br>- Added `notebooks/01_source_columns.ipynb` to list columns and inferred data types.<br>- Documented E. Business Requirements (BR1–BR5).<br>- Designed the data model<br>- Documented the ELT architecture and the data flow.|
 | 2026-11-16 | 0.1.0 | - Initial project setup and README overview.<br>- Project folder structure defined; source files stored locally in `data/raw/`.<br>- Added source exploration notebook.<br>- Documented B. Data Sources and Exploration: Source Inventory for all 10 files (grain, contents, keys).<br>- Documented C. Data Scope and Volume and data volume.<br>- Documented D. Known Data Quality Issues. |
 
@@ -141,11 +143,30 @@ Table-level flow from the 10 source files to Power BI:
 - **Warehouse:** 6 dims, 4 facts and 1 bridge. `dim_employee` is SCD2; facts carry data-quality flags (`is_post_resign_sale`, `is_off_territory`, `is_return_on_undelivered`).
 - **Marts:** one per Power BI page.
 
-
-
 ## II. Configuration
 
 This section covers required tools, repository structure, environment variables, PostgreSQL setup, and source file preparation.
+
+### Quick start
+
+If you already have Git, Docker Desktop and Python installed (commands shown for Windows PowerShell; macOS/Linux in comments):
+
+```powershell
+git clone https://github.com/<your-username>/vietdist-sales-pipeline.git
+cd vietdist-sales-pipeline
+copy .env.example .env                       # macOS/Linux: cp .env.example .env
+docker compose up -d                         # starts PostgreSQL, creates schemas
+python -m venv .venv
+.venv\Scripts\activate                       # macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+mkdir $HOME\.dbt -Force                      # macOS/Linux: mkdir -p ~/.dbt
+copy vietdist_dbt\profiles.example.yml $HOME\.dbt\profiles.yml   # macOS/Linux: cp vietdist_dbt/profiles.example.yml ~/.dbt/profiles.yml
+. .\scripts\load_env.ps1                     # macOS/Linux: source scripts/load_env.sh
+cd vietdist_dbt
+dbt debug                                    # should end with "All checks passed!"
+```
+
+Docker Desktop must be running before `docker compose up -d`. The sections below explain each step.
 
 ---
 
@@ -155,8 +176,8 @@ This section covers required tools, repository structure, environment variables,
 |---|---|---|
 | [Git](https://git-scm.com/) | 2.40+ | Cloning the repository |
 | [Docker Desktop](https://www.docker.com/products/docker-desktop/) (incl. Docker Compose v2) | 4.x / Compose 2.20+ | Running PostgreSQL in a container |
-| [Python](https://www.python.org/downloads/) | 3.11 – 3.13 | Python loaders + dbt Core |
-| [dbt Core](https://docs.getdbt.com/docs/core/installation-overview) + `dbt-postgres` | 1.11+ (below 2.0) | Transformations (staging → warehouse), tests, snapshot, docs |
+| [Python](https://www.python.org/downloads/) | 3.11 – 3.13 (tested on 3.13) | Python loaders + dbt Core |
+| [dbt Core](https://docs.getdbt.com/docs/core/installation-overview) + `dbt-postgres` | dbt Core 1.11+ (below 2.0), `dbt-postgres` 1.11+ | Transformations (staging → warehouse), tests, snapshot, docs |
 | [Power BI Desktop](https://powerbi.microsoft.com/desktop/) | Latest | Report layer (Windows only) |
 | A SQL client (optional) – DBeaver, pgAdmin or `psql` | Any | Inspecting the database |
 
@@ -171,56 +192,68 @@ docker compose version
 python --version        # should print 3.11.x – 3.13.x
 ```
 
-> Docker only runs PostgreSQL. The Python loaders and dbt run on your machine, so your local Python version matters. dbt Core 1.8–1.9 does not support Python 3.13. If you use 3.13, you need dbt Core 1.11 or newer.
+> Docker only runs PostgreSQL. The Python loaders and dbt run on your machine, so your local Python version matters. All versions are pinned in `requirements.txt`.
 
-Create a virtual environment and install dependencies:
+Clone the repository, then create a virtual environment and install dependencies:
 
 ```bash
+git clone https://github.com/<your-username>/vietdist-sales-pipeline.git
+cd vietdist-sales-pipeline
+
 python -m venv .venv
 .venv\Scripts\activate          # Windows  (macOS/Linux: source .venv/bin/activate)
 pip install -r requirements.txt
 dbt --version                   # should show core 1.11+ and the postgres plugin
 ```
 
+All commands in this README run from the project root (`vietdist-sales-pipeline/`) unless stated otherwise. dbt commands run from `vietdist_dbt/`.
+
 ---
 
 ### B. Repository Structure
 
 ```text
-vietdist/
+vietdist-sales-pipeline/
 ├── data/
 │   └── raw/                        # Source files go here (git-ignored, see section E)
+│       ├── .gitkeep                # Keeps the empty folder in Git
 │       ├── SRC01_sales_transactions.csv
-│       ├── SRC02_sales_target_plan.xlsx
 │       ├── ...
 │       └── SRC10_promotion_program.xlsx
 │
 ├── docker/
 │   └── postgres/
-│       └── init_db.sql             # Creates schemas raw, staging, dwh + ingest_log + roles
+│       └── init_db.sql             # Creates schemas raw, staging, dwh, snapshots + ingest_log + roles
 │
 ├── loaders/                        # Layer 1 – Extract & Load (Python)
 │   ├── config.py                   # Reads .env, maps each source file → raw table
 │   ├── db.py                       # SQLAlchemy engine / connection helper
-│   ├── load_raw.py                 # Entry point: loads all 10 sources into schema raw
+│   ├── load_raw.py                 # Loads all 10 sources into schema raw
 │   └── ingest_log.py               # Writes one row per load to raw.ingest_log
 │
-├── dbt/
-│   └── vietdist/                   # Layers 2 & 3 – Transform (dbt Core)
-│       ├── dbt_project.yml
-│       ├── profiles.yml            # Reads connection details from env vars (no secrets)
-│       ├── models/
-│       │   ├── staging/            # 1 view per source (stg_*) + sources.yml + tests
-│       │   └── dwh/
-│       │       ├── dims/           # 6 dimensions
-│       │       ├── facts/          # 4 facts
-│       │       ├── bridges/        # bridge_promotion_product
-│       │       └── marts/          # 3 marts for Power BI
-│       ├── snapshots/              # dim_employee SCD Type 2
-│       ├── tests/                  # Singular (custom SQL) tests
-│       └── macros/
+├── vietdist_dbt/                   # Layers 2 & 3 – Transform (dbt Core)
+│   ├── dbt_project.yml
+│   ├── profiles.example.yml        # Template: copy to ~/.dbt/profiles.yml (no secrets, reads env vars)
+│   ├── models/
+│   │   ├── staging/                # 1 view per source (stg_*) + _sources.yml + _stg_models.yml
+│   │   └── dwh/
+│   │       ├── dims/               # 6 dimensions
+│   │       ├── facts/              # 4 facts
+│   │       ├── bridges/            # bridge_promotion_product
+│   │       └── marts/              # 3 marts for Power BI
+│   ├── snapshots/                  # dim_employee SCD Type 2
+│   ├── tests/                      # Singular (custom SQL) tests
+│   └── macros/
+│       └── generate_schema_name.sql   # Uses schema names exactly as configured
 │
-├── powerbi/
+├── notebooks/
+│   └── 01_source_exploration.ipynb # Data profiling before modelling
+│
+├── scripts/
+│   ├── load_env.sh                 # Loads .env into the shell (macOS/Linux)
+│   └── load_env.ps1                # Loads .env into the shell (Windows PowerShell)
+│
+├── power_bi/
 │   └── vietdist_report.pbix        # 3 report pages, imports from schema dwh
 │
 ├── docs/
@@ -229,6 +262,9 @@ vietdist/
 │   ├── data_issues.md
 │   └── assumptions_log.md
 │
+├── images/                         # Screenshots used in README
+│
+├── run_pipeline.py                 # One command: load raw → dbt build
 ├── docker-compose.yml              # PostgreSQL service
 ├── requirements.txt                # Python + dbt dependencies
 ├── .env.example                    # Template for environment variables
@@ -240,28 +276,28 @@ vietdist/
 |---|---|
 | `data/raw/` | Source files |
 | `loaders/` | Python loaders → **Layer 1 Raw (Bronze)** |
-| `dbt/vietdist/models/staging/` | **Layer 2 Staging (Silver)** |
-| `dbt/vietdist/models/dwh/` + `snapshots/` | **Layer 3 Warehouse (Gold)** |
-| `powerbi/` | Power BI reports |
+| `vietdist_dbt/models/staging/` | **Layer 2 Staging (Silver)** |
+| `vietdist_dbt/models/dwh/` + `vietdist_dbt/snapshots/` | **Layer 3 Warehouse (Gold)** |
+| `power_bi/` | Power BI reports |
 
 ---
 
 ### C. Environment Variables
 
-All connection details live in one `.env` file in the project root. It is read by **Docker Compose** (to create the database), the **Python loaders** (via `python-dotenv`) and **dbt** (via `env_var()` in `profiles.yml`). The real `.env` is listed in `.gitignore` and must never be committed.
+All connection details live in one `.env` file in the project root. It is read by **Docker Compose** (to create the database), the **Python loaders** (via `python-dotenv`) and **dbt** (via `env_var()` in `~/.dbt/profiles.yml`). The real `.env` is listed in `.gitignore` and must never be committed.
 
 **1. Create your `.env` from the template:**
 
 ```bash
+copy .env.example .env        # Windows
 cp .env.example .env          # macOS / Linux
-copy .env.example .env        # Windows (cmd)
 ```
 
 **2. Edit the values if needed (`.env.example`):**
 
 ```dotenv
 # ---------- PostgreSQL (Docker) ----------
-POSTGRES_HOST=localhost
+POSTGRES_HOST=127.0.0.1
 POSTGRES_PORT=5432
 POSTGRES_DB=vietdist
 POSTGRES_USER=vietdist_admin
@@ -270,53 +306,118 @@ POSTGRES_PASSWORD=change_me_please
 # ---------- Loaders ----------
 RAW_DATA_DIR=./data/raw
 RAW_SCHEMA=raw
-LOAD_MODE=full_refresh          # full_refresh | append
+# full_refresh = truncate and reload each raw table, append = add rows (incremental loads)
+LOAD_MODE=full_refresh
 
 # ---------- dbt ----------
-DBT_PROFILES_DIR=./dbt/vietdist
 DBT_TARGET=dev
 DBT_THREADS=4
 ```
 
+> Keep comments on their own line. Docker Compose, `python-dotenv` and the shell scripts handle `VALUE  # comment` differently. Avoid spaces, quotes, `#` and `$` in values.
+
 | Variable | Description | Default |
 |---|---|---|
-| `POSTGRES_HOST` | Database host. `localhost` when running loaders/dbt on your machine | `localhost` |
-| `POSTGRES_PORT` | Host port mapped to the container. Change it (e.g. `5433`) if you already have Postgres installed locally | `5432` |
+| `POSTGRES_HOST` | Database host. Use `127.0.0.1` rather than `localhost`: on Windows, `localhost` can resolve to IPv6 (`::1`) and reach a locally installed Postgres instead of the Docker container | `127.0.0.1` |
+| `POSTGRES_PORT` | Host port mapped to the container. Change it to e.g. `5433` if Postgres is already installed on your machine (check with `Get-Service *postgres*` on Windows) | `5432` |
 | `POSTGRES_DB` | Database name | `vietdist` |
-| `POSTGRES_USER` / `POSTGRES_PASSWORD` | Admin user created when the container starts for the first time | – |
+| `POSTGRES_USER` / `POSTGRES_PASSWORD` | Admin user created when the container starts **for the first time** | – |
 | `RAW_DATA_DIR` | Folder the loaders read source files from | `./data/raw` |
 | `RAW_SCHEMA` | Target schema for Layer 1 | `raw` |
 | `LOAD_MODE` | `full_refresh` truncates and reloads each raw table; `append` adds rows (used later for incremental loads) | `full_refresh` |
-| `DBT_PROFILES_DIR` | Tells dbt to use the project's own `profiles.yml` instead of `~/.dbt/` | `./dbt/vietdist` |
 | `DBT_TARGET` | dbt target (output) to use | `dev` |
 | `DBT_THREADS` | Number of models dbt builds in parallel | `4` |
 
-**3. dbt reads the same variables – `dbt/vietdist/profiles.yml`:**
+**3. dbt reads the same variables through `~/.dbt/profiles.yml`.**
+
+The repository ships a template, `vietdist_dbt/profiles.example.yml`. Copy it to your dbt home folder once:
+
+```powershell
+mkdir $HOME\.dbt -Force
+copy vietdist_dbt\profiles.example.yml $HOME\.dbt\profiles.yml       # Windows
+```
+
+```bash
+mkdir -p ~/.dbt && cp vietdist_dbt/profiles.example.yml ~/.dbt/profiles.yml   # macOS / Linux
+```
+
+`vietdist_dbt/profiles.example.yml`:
 
 ```yaml
-vietdist:
+vietdist_dbt:
   target: "{{ env_var('DBT_TARGET', 'dev') }}"
   outputs:
     dev:
       type: postgres
-      host: "{{ env_var('POSTGRES_HOST') }}"
-      port: "{{ env_var('POSTGRES_PORT') | int }}"
-      dbname: "{{ env_var('POSTGRES_DB') }}"
+      host: "{{ env_var('POSTGRES_HOST', '127.0.0.1') }}"
+      port: "{{ env_var('POSTGRES_PORT', '5432') | as_number }}"
+      dbname: "{{ env_var('POSTGRES_DB', 'vietdist') }}"
       user: "{{ env_var('POSTGRES_USER') }}"
       password: "{{ env_var('POSTGRES_PASSWORD') }}"
       schema: staging            # default schema; dwh models override it in dbt_project.yml
-      threads: "{{ env_var('DBT_THREADS', '4') | int }}"
+      threads: "{{ env_var('DBT_THREADS', '4') | as_number }}"
 ```
 
-> dbt does not read `.env` files by itself. Load the variables into your shell before running dbt:
-> - macOS / Linux: `set -a && source .env && set +a`
-> - Windows PowerShell: `Get-Content .env | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object { $k,$v = $_ -split '=',2; [Environment]::SetEnvironmentVariable($k.Trim(), $v.Split('#')[0].Trim()) }`
+The top-level key (`vietdist_dbt`) must match `profile: 'vietdist_dbt'` in `dbt_project.yml`.
+
+> dbt looks for `profiles.yml` in the current folder **before** `~/.dbt/`. Do not keep a second `profiles.yml` inside `vietdist_dbt/`, or dbt will silently use that one instead. `dbt debug` prints which file it is using (`Using profiles.yml file at ...`).
+
+The default schema is `staging`. Models in `models/dwh/` set `+schema: dwh` in `dbt_project.yml`:
+
+```yaml
+models:
+  vietdist_dbt:
+    staging:
+      +schema: staging
+      +materialized: view
+    dwh:
+      +schema: dwh
+      +materialized: table
+```
+
+Without `macros/generate_schema_name.sql`, dbt would join the default and custom schema names and create `staging_staging` and `staging_dwh`. The macro makes dbt use `staging` and `dwh` exactly:
+
+```sql
+{% macro generate_schema_name(custom_schema_name, node) -%}
+    {%- if custom_schema_name is none -%}
+        {{ target.schema }}
+    {%- else -%}
+        {{ custom_schema_name | trim }}
+    {%- endif -%}
+{%- endmacro %}
+```
+
+**4. Load `.env` into your shell before running dbt.** dbt does not read `.env` files by itself. Run this once per new terminal, **from the project root**:
+
+```bash
+. .\scripts\load_env.ps1            # Windows PowerShell
+source scripts/load_env.sh          # macOS / Linux
+```
+
+`scripts/load_env.ps1`:
+
+```powershell
+Get-Content .env | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object {
+    $name, $value = $_ -split '=', 2
+    [Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim())
+}
+```
+
+`scripts/load_env.sh`:
+
+```bash
+set -a
+source .env
+set +a
+```
+
+The Python loaders do not need this step; they read `.env` directly with `python-dotenv`.
 
 ---
 
 ### D. PostgreSQL Setup
 
-PostgreSQL runs in Docker, so there is nothing to install on your machine. On first start the container runs `docker/postgres/init_db.sql`, which creates the three schemas and the ingest log.
+PostgreSQL runs in Docker, so there is nothing to install on your machine. On first start the container runs `docker/postgres/init_db.sql`, which creates the schemas, the ingest log and a read-only role.
 
 **1. `docker-compose.yml`:**
 
@@ -325,7 +426,6 @@ services:
   postgres:
     image: postgres:16
     container_name: vietdist_postgres
-    env_file: .env
     environment:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
@@ -345,6 +445,8 @@ services:
 volumes:
   pg_data:
 ```
+
+Docker Compose fills in `${...}` from the `.env` file in the project root automatically. Inside the container Postgres always listens on `5432`; `POSTGRES_PORT` only changes the port on your machine.
 
 **2. `docker/postgres/init_db.sql`:**
 
@@ -369,41 +471,65 @@ CREATE TABLE IF NOT EXISTS raw.ingest_log (
     finished_at    TIMESTAMPTZ
 );
 
--- Read-only role for Power BI
+-- Read-only role for Power BI.
+-- Local demo password: change it with ALTER ROLE if this database is ever shared.
 CREATE ROLE powerbi_reader WITH LOGIN PASSWORD 'change_me_reader';
-GRANT CONNECT ON DATABASE vietdist TO powerbi_reader;
 GRANT USAGE ON SCHEMA dwh TO powerbi_reader;
 ALTER DEFAULT PRIVILEGES IN SCHEMA dwh GRANT SELECT ON TABLES TO powerbi_reader;
 ```
+
+> The `powerbi_reader` password is a placeholder for a local demo with synthetic data. It is committed on purpose; real credentials never are.
 
 **3. Start the database and check it is healthy:**
 
 ```bash
 docker compose up -d
-docker compose ps                          # STATUS should show "healthy"
-docker exec -it vietdist_postgres psql -U vietdist_admin -d vietdist -c "\dn"
+docker compose ps                          # STATUS should show "healthy"; PORTS shows <POSTGRES_PORT>->5432
+docker compose exec postgres psql -U vietdist_admin -d vietdist -c "\dn"
 ```
 
 Expected schemas: `raw`, `staging`, `dwh`, `snapshots`, `public`.
 
-**4. Connection details (SQL client / Power BI):**
+**4. Check that dbt can connect:**
+
+```bash
+. .\scripts\load_env.ps1                   # macOS/Linux: source scripts/load_env.sh
+cd vietdist_dbt
+dbt debug                                  # should end with "All checks passed!"
+```
+
+**5. Connection details (SQL client / Power BI):**
 
 | Setting | Value |
 |---|---|
-| Host | `localhost` |
+| Host | `127.0.0.1` |
 | Port | value of `POSTGRES_PORT` (default `5432`) |
 | Database | `vietdist` |
 | User | `vietdist_admin` (full access) or `powerbi_reader` (read-only, schema `dwh`) |
+
+In DBeaver, create the connection via **Database → New Database Connection → PostgreSQL** (not via *Edit Driver*, which changes the driver for every connection).
 
 **Useful commands:**
 
 | Command | What it does |
 |---|---|
+| `docker compose up -d` | Starts the database |
 | `docker compose stop` | Stops the container, keeps the data |
 | `docker compose down` | Removes the container, keeps the data (volume `pg_data`) |
 | `docker compose down -v` | Removes the container **and all data** – `init_db.sql` runs again on next `up` |
+| `docker compose logs -f postgres` | Follows the database log |
 
 > `init_db.sql` only runs when the volume is empty. If you change it, run `docker compose down -v` and `docker compose up -d` to apply it.
+
+**Troubleshooting:**
+
+| Error | Cause | Fix |
+|---|---|---|
+| `failed to connect to the docker API ... dockerDesktopLinuxEngine` | Docker Desktop is not running | Start Docker Desktop and wait for "Engine running" |
+| `Could not find profile named 'vietdist_dbt'` | No `profiles.yml` in `~/.dbt/` (or the top-level key is misspelled) | Copy `profiles.example.yml` as in section C.3 |
+| `Connection refused` | Container not running, or port in `.env` ≠ port in use | `docker compose ps`; use the host port shown under PORTS |
+| `password authentication failed` | Another Postgres on the same port, or the password in `.env` changed after the first start | Use `127.0.0.1` and a free port (e.g. `5433`); reset with `docker compose exec postgres psql -U vietdist_admin -d vietdist -c "ALTER USER vietdist_admin PASSWORD '<new>';"` or `docker compose down -v` |
+| `env_var ... is not set` in dbt | `.env` not loaded in this terminal | Run `. .\scripts\load_env.ps1` from the project root |
 
 ---
 
@@ -411,10 +537,10 @@ Expected schemas: `raw`, `staging`, `dwh`, `snapshots`, `public`.
 
 **1. Access**
 
-The source data is a synthetic dataset for a fictional Vietnamese FMCG distributor (VietDist), covering calendar year 2024. It contains 10 files (~25 MB) delivered as one zip archive. The raw files are **not committed** to Git (`data/raw/*` is in `.gitignore`).
+The source data is a synthetic dataset for a fictional Vietnamese FMCG distributor (VietDist), covering calendar year 2024. It contains 10 files (~25 MB) delivered as one zip archive. The raw files are **not committed** to Git (`data/raw/*` is in `.gitignore`, except `.gitkeep`).
 
 To get the data:
-1. Download `vietdist_sample_data.zip` from *[add link – e.g. GitHub Release asset]*.
+1. Download `vietdist_sample_data.zip` from the [GitHub Release](https://github.com/<your-username>/vietdist-sales-pipeline/releases) page.
 2. Extract it so the files sit directly in `data/raw/` (no sub-folder).
 3. Do not rename the files – the loaders match them by name.
 
@@ -433,8 +559,6 @@ To get the data:
 | SRC09 | `SRC09_return_transactions.csv` | CSV | – | 3,665 | `raw.src09_return_transactions` |
 | SRC10 | `SRC10_promotion_program.xlsx` | XLSX | Promotions | 40 | `raw.src10_promotion_program` |
 
-> Sheet names for single-sheet files are placeholders – match them to the actual workbook names in `loaders/config.py`.
-
 **3. Format rules the loaders follow**
 
 | Rule | Detail |
@@ -442,7 +566,7 @@ To get the data:
 | Encoding | CSV files are read as **UTF-8** (Vietnamese diacritics). Text is normalised to Unicode **NFC** in staging. |
 | Delimiter | CSV uses comma `,`; first row is the header. |
 | Excel | Only `.xlsx` is supported (read with `openpyxl`). Summary sheets (`Summary`, `Category_Summary`) are skipped. |
-| Versioned sheets | SRC02 and SRC07 have `v1` / `v2` sheets. Both are loaded into the same raw table with a `sheet_name` column; staging decides which version is used. |
+| Versioned sheets | SRC02 and SRC07 have `v1` / `v2` sheets. Both are loaded into the same raw table with a `_sheet_name` column; staging decides which version is used. |
 | Data types in Raw | **Every column is loaded as `TEXT`** – nothing is cast in Layer 1. This keeps values such as `phone` and `tax_code` exactly as delivered; casting and cleaning happen in dbt staging. |
 | Dates | Single format in the source (`YYYY-MM-DD`); parsed in staging. |
 | Currency | Amounts are in **VND**, no decimals. |
@@ -458,13 +582,10 @@ To get the data:
 | `_row_number` | INTEGER | Row position in the source file, for tracing issues back |
 | `_loaded_at` | TIMESTAMPTZ | Load timestamp |
 
-**5. Known data issues to be aware of** (full list in `docs/data_issues.md`)
+**5. Known data issues**
 
-- `SRC03.phone` was saved as a number, so the leading `0` is lost; `tax_code` is 52% null and stored as a float. Both are kept as text in raw and fixed in staging.
-- `SRC08` territory mapping reflects only the v1 assignments and is not updated for the July 2024 transfers; 157 customers are unmapped.
-- `SRC10.applicable_products` is a pipe-delimited list (`P001|P002|…`) and is split into `bridge_promotion_product`.
-- Derived columns in SRC01 (order month/quarter/year, region, category) are dropped in staging and taken from the dimensions instead.
-  
+The source data contains deliberate quality issues (lost leading zeros, unmapped customers, pipe-delimited lists, derived columns). How each one is detected and fixed is documented in [`docs/data_issues.md`](docs/data_issues.md).
+
 ## III. Development
 
 ### A. Bronze Layer
