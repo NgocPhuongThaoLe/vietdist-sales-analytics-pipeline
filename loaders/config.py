@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 # Paths
 PROJECT_ROOT = Path(__file__).resolve().parent
 DATA_RAW_DIR = PROJECT_ROOT/"data"/"raw"
-LOG_DIG = PROJECT_ROOT/"logs"
+LOG_DIR = PROJECT_ROOT/"logs"
 
 load_dotenv(PROJECT_ROOT/".env")
 
