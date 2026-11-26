@@ -74,7 +74,7 @@ def _read_xlsx(path: Path, sheets: dict[str, str]) -> dict[str, pd.DataFrame]:
         return {s: pd.read_excel(xls, sheet_name=s, **_READ_OPTS) for s in wanted}
 
 
-# Heplpers
+# Helpers
 # Light clean-up that does NOT change any cell values
 def _tidy(df: pd.DataFrame) -> pd.DataFrame:
     # Make a copy -> original table is not changed
@@ -151,19 +151,23 @@ if __name__ == "__main__":
     # Expected row count for each (source, sheet), taken from the data profile
     EXPECTED = {
         ("SRC01", None): 119_101,
-        ("SRC02", "v1"): 1_332,
-        ("SRC02", "v2"): 618,
+        ("SRC02", "Plan_v1_Original"): 1_332,
+        ("SRC02", "Plan_v2_Adjustment_H2"): 618,
         ("SRC03", None): 2_000,
         ("SRC04", "Products"): 100,
         ("SRC05", "Orders"): 35_945,
         ("SRC06", None): 138,
-        ("SRC07", "v1"): 114,
-        ("SRC07", "v2"): 114,
+        ("SRC07", "Employee_v1_StartYear"): 114,
+        ("SRC07", "Employee_v2_Adjustment"): 114,
         ("SRC07", "Change_Log"): 13,
-        ("SRC08", "v1"): 1_843,
+        ("SRC08", "Sheet1"): 1_843,
         ("SRC09", None): 3_665,
-        ("SRC10", "Promotions"): 40,
+        ("SRC10", "Sheet1"): 40,
     }
+
+    # Only ID-like columns must never look like floats (leading zeros matter).
+    # Amount columns such as "15000.0" are fine as text -> cast in dbt.
+    ID_LIKE = ("id", "code", "phone", "tax")
 
     # Counter for tables with problems
     problems = 0
@@ -180,11 +184,14 @@ if __name__ == "__main__":
             not_text = [c for c in df.columns
                         if not pd.api.types.is_string_dtype(df[c])]
             # Check 2: find columns with values like "912345678.0" (sign it was read as a float)
+            #   only for ID-like columns (customer_id, tax_code, phone...)
             float_like = [c for c in df.columns
-                          if df[c].str.fullmatch(r"\d+\.0").any()]
+                          if any(w in c.lower() for w in ID_LIKE)
+                          and df[c].str.fullmatch(r"\d+\.0").any()]
             # Check 3: does the row count match the expected count?
+            #   no expected value (e.g. sheet renamed in config) -> CHECK, not silently OK
             exp = EXPECTED.get(key)
-            count_ok = exp is None or len(df) == exp
+            count_ok = exp is not None and len(df) == exp
 
             # Passed all 3 checks -> "OK", otherwise -> "CHECK"
             status = "OK" if not (not_text or float_like) and count_ok else "CHECK"

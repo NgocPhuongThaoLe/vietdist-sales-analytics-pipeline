@@ -13,6 +13,8 @@ Power BI Desktop connects to the Gold layer to report on sales performance and d
 ## Changelog
 | Date | Version | Changes |
 | --- | --- | --- |
+| 2026-11-26 | 0.2.0 | - Added `loader.py` and `run_all.py`.<br>- Removed old `db.py` and `load_raw.py` (replaced by `loader.py` + `run_all.py`).<br>- Added `init_db.sql` (schemas `raw`, `staging`, `dwh`, `snapshots` + `raw.ingest_log` with lookup index).<br>- Switched raw load from multi-row INSERT to Postgres `COPY` (SRC01 119k rows: minutes → ~10 s).<br>- Fixed sheet names in `config.py`.<br>- `reader.py` self-check: updated expected row counts to the real sheet names; a missing expected count is now flagged as `CHECK` instead of passing; the float-like check (`123.0`) now runs on ID/code/phone/tax columns only.<br>- Fixed Docker port mapping to `5433:5432`; use `127.0.0.1` as host on Windows.<br>- All 10 sources loaded into 11 raw tables; row counts match the data profile.<br>- Rewrote README Section III.A to match the implementation. |
+| 2026-11-24 | 0.1.5 | - Added `reader.py`. |
 | 2026-11-23 | 0.1.4 | - Added Bronze layer development documentation to the README (Section III.A)<br>- Added `config.py` as the central configuration module for the loaders. |
 | 2026-11-22 | 0.1.3 | - Set up the project structure for PostgreSQL, Python loaders, dbt, and Power BI.<br>- Added Docker Compose, database initialization, and environment configuration files.<br>- Updated the README with the local setup steps and repository layout. |
 | 2026-11-21 | 0.1.2 | - Added the Configuration and Setup section to the README.<br>- Configured dbt to read PostgreSQL connection settings from environment variables.<br>- Documented how to load `.env` variables and verify the connection with `dbt debug`. |
@@ -591,94 +593,110 @@ The source data contains deliberate quality issues (lost leading zeros, unmapped
 
 ### A. Bronze Layer
 
-The Bronze layer lands the 10 source files in PostgreSQL **as-is**, with no cleaning or business logic. Its job is to make the raw data queryable, traceable to its source file and safe to reload. All cleaning (types, phone/tax_code fixes, Unicode NFC, de-duplicating derived columns) happens later in the Silver layer (dbt staging models).
+The Bronze layer loads the 10 source files into PostgreSQL **as delivered**, with no cleaning or business logic. It does three things: makes the raw data queryable, makes each row traceable to its source file, and makes reloads safe. All cleaning (types, phone/tax_code fixes, Unicode NFC, dropping derived columns) happens later in the Silver layer (dbt staging models).
 
 | Item | Choice |
 |---|---|
 | Source location | Local folder `data/raw/` (10 files, ~25 MB, CSV + XLSX) |
 | Target | PostgreSQL 16 (Docker Compose), schema `raw` |
-| Tooling | Python 3.11, pandas, openpyxl, SQLAlchemy, psycopg2 |
-| Load pattern | Full refresh per source, skipped if the file is unchanged (hash check) |
-| Entry point | `python -m ingestion.load_raw` (loads all sources) |
+| Tooling | Python 3.13, pandas, openpyxl, SQLAlchemy 2, psycopg2 |
+| Load pattern | Full refresh per source file, skipped if the file is unchanged (hash check) |
+| Load method | Postgres `COPY ... FROM STDIN` (SRC01, 119k rows, loads in ~10 s) |
+| Entry point | `python loaders/run_all.py` (loads all sources) |
 
 #### Source Connection and File Parsing
 
-**Connection.** Database credentials are read from `.env` (never committed; see `.env.example`). Postgres runs in Docker:
+**Connection.** Database credentials are read from `.env`, which is never committed (see `.env.example`). Postgres runs in Docker with the port mapped as `5433:5432` (host:container):
 
     docker compose up -d postgres
-    psql -h localhost -U $POSTGRES_USER -d $POSTGRES_DB -f sql/init_db.sql   # creates schema raw + raw.ingest_log
+    docker compose port postgres 5432      # -> 0.0.0.0:5433
 
-**Source registry.** Every source is declared once in `ingestion/sources.yml` (file name, format, sheets to load, sheets to skip, target table). The loader loops over this registry, so adding a source means adding config, not code.
+`init_db.sql` is mounted into `/docker-entrypoint-initdb.d/` and runs automatically the first time the container starts on an empty volume. It creates the schemas `raw`, `staging`, `dwh` and `snapshots`, plus the table `raw.ingest_log`. To apply changes to an existing database, run it manually (every statement uses `IF NOT EXISTS`, so this is safe):
 
-**Parsing rules.**
-- **Every column is read as text** (`dtype=str`, `keep_default_na=False`). This stops pandas from changing the data on read, for example by turning `tax_code` into a float or dropping leading zeros. Type casting is deliberately left to Silver.
-- **CSV**: UTF-8, comma-delimited, header on row 1.
-- **XLSX**: only the listed data sheets are loaded. Summary sheets are skipped (`Summary` in SRC02, `Category_Summary` in SRC04).
-- **Multi-version sheets** keep their version: SRC02 (target v1 full-year / v2 H2 re-plan) and SRC07 (employee v1 / v2 / Change_Log) each land in separate raw tables. This keeps the history that Silver needs for target versioning and SCD2.
-- Column names are converted to `snake_case`. Values are not changed.
+    psql -h 127.0.0.1 -p 5433 -U $POSTGRES_USER -d $POSTGRES_DB -f init_db.sql
 
-| Source | Format | Sheets loaded | Raw table(s) | Rows |
+On Windows, use `127.0.0.1` instead of `localhost`. Otherwise `localhost` resolves to IPv6 `::1`, and Docker Desktop may drop the connection.
+
+**Source registry.** Every source is declared once in the `SOURCES` list in `loaders/config.py`. Each entry has the source id, the file name, the format and the target table. For Excel files, it also maps each sheet to load to a target table. Sheets not listed in that mapping are skipped. The loader loops over this registry, so adding a source means adding config, not code. Sheet names must match the Excel file exactly. If a listed sheet is missing, the source fails with a message that lists the sheets that are available.
+
+**Parsing rules** (`loaders/reader.py`):
+- **Every column is read as text** (`dtype=str`, `keep_default_na=False`). This stops pandas from changing data on read, for example turning `tax_code` into a float or dropping leading zeros. Type casting is left to Silver on purpose.
+- **CSV**: encoding `utf-8-sig` (UTF-8, BOM-safe for Vietnamese text), comma-delimited, header on row 1.
+- **XLSX**: only the sheets listed in the registry are loaded. Summary sheets are skipped (`Summary` in SRC02, `Category_Summary` in SRC04).
+- **Multi-version sheets are unioned into one table per entity**, and `_sheet_name` records the version:
+  - SRC02: target v1 (full year) and v2 (H2 re-plan) go into `src02_sales_target`.
+  - SRC07: employee v1 and v2 go into `src07_employee_master`, and `Change_Log` goes into its own table.
+
+  This keeps the history that Silver needs for target versioning and SCD2, and a version can be filtered with a `WHERE` clause.
+- **Light tidy-up only**, with no cell values changed. Spaces around column names are trimmed. Rows where every cell is empty are dropped. Columns with no header (`Unnamed: n`) are dropped if they are completely empty. Column names are otherwise kept as in the source.
+
+| Source | Format | Sheets loaded | Raw table | Rows |
 |---|---|---|---|---|
-| SRC01 Sales transactions | CSV | – | `raw.sales_transactions` | 119,101 |
-| SRC02 Sales target plan | XLSX | v1, v2 | `raw.sales_target_v1`, `raw.sales_target_v2` | 1,332 / 618 |
-| SRC03 Customer master | CSV | – | `raw.customer_master` | 2,000 |
-| SRC04 Product master | XLSX | products | `raw.product_master` | 100 |
-| SRC05 Distributor orders | XLSX | orders | `raw.distributor_orders` | 35,945 |
-| SRC06 Distributor master | CSV | – | `raw.distributor_master` | 138 |
-| SRC07 Employee master | XLSX | v1, v2, Change_Log | `raw.employee_v1`, `raw.employee_v2`, `raw.employee_change_log` | 114 / 114 / 13 |
-| SRC08 Territory mapping | XLSX | mapping | `raw.territory_mapping` | 1,843 |
-| SRC09 Return transactions | CSV | – | `raw.return_transactions` | 3,665 |
-| SRC10 Promotion program | XLSX | promotions | `raw.promotion_program` | 40 |
+| SRC01 Sales transactions | CSV | – | `raw.src01_sales_transactions` | 119,101 |
+| SRC02 Sales target plan | XLSX | Plan_v1_Original, Plan_v2_Adjustment_H2 | `raw.src02_sales_target` | 1,332 + 618 |
+| SRC03 Customer master | CSV | – | `raw.src03_customer_master` | 2,000 |
+| SRC04 Product master | XLSX | Products | `raw.src04_product_master` | 100 |
+| SRC05 Distributor orders | XLSX | Orders | `raw.src05_distributor_orders` | 35,945 |
+| SRC06 Distributor master | CSV | – | `raw.src06_distributor_master` | 138 |
+| SRC07 Employee master | XLSX | Employee_v1_StartYear, Employee_v2_Adjustment | `raw.src07_employee_master` | 114 + 114 |
+| | | Change_Log | `raw.src07_employee_change_log` | 13 |
+| SRC08 Territory mapping | XLSX | Sheet1 | `raw.src08_territory_mapping` | 1,843 |
+| SRC09 Return transactions | CSV | – | `raw.src09_return_transactions` | 3,665 |
+| SRC10 Promotion program | XLSX | Sheet1 | `raw.src10_promotion_program` | 40 |
 
 #### Raw Data Ingestion and Metadata
 
-Each source table is loaded inside a single transaction. The table is truncated and the file is inserted in full, so a failed load never leaves a half-written table. The loader appends these metadata columns to every row:
+**One transaction per source file.** Every target table of the file is truncated and reloaded, and the `success` rows are written to `raw.ingest_log`, all in one transaction. If any step fails, nothing from that file is committed, so a failed load never leaves a half-written or mixed-version table. Tables are truncated rather than dropped, so dbt views built on `raw.*` keep working.
+
+**Failures are isolated.** If one source fails, it is logged as `failed` in a separate transaction and the run continues with the remaining sources. `run_all.py` exits with code 1 if any source failed, so Airflow or CI can mark the run as failed.
+
+The loader appends these metadata columns to every row:
 
 | Column | Type | Purpose |
 |---|---|---|
-| `_batch_id` | UUID | Groups all tables loaded in one run; joins to `raw.ingest_log` |
+| `_batch_id` | TEXT | 12-character run id. Groups everything loaded in one run and joins to `raw.ingest_log.batch_id` |
 | `_source_file` | TEXT | Original file name, e.g. `SRC01_sales_transactions.csv` |
-| `_sheet_name` | TEXT | Excel sheet the row came from (NULL for CSV) |
-| `_row_number` | INT | Row position in the source file, used to trace a bad record back to the file |
+| `_sheet_name` | TEXT | Excel sheet the row came from (empty string for CSV); also the version key for SRC02/SRC07 |
 | `_file_hash` | TEXT | SHA-256 of the source file |
-| `_ingested_at` | TIMESTAMPTZ | Load timestamp (UTC) |
+| `_loaded_at` | TIMESTAMPTZ | Load timestamp (UTC) |
 
-**Re-runnable by design.** Before loading, the loader computes the file's SHA-256 and checks `raw.ingest_log`. If the same file and sheet already loaded successfully with the same hash, it is skipped. If the file changed, the table is reloaded. Running the loader twice therefore never creates duplicates. Use `--force` to reload everything anyway.
+**Re-runnable by design.** Before loading, the loader computes the file's SHA-256 and checks `raw.ingest_log`. If the same source already loaded successfully with the same hash, the whole file is `skipped`. If the file changed, every table from that file is reloaded. Running the loader twice therefore never creates duplicates.
 
-    python -m ingestion.load_raw            # load all new/changed sources
-    python -m ingestion.load_raw --source SRC07   # one source
-    python -m ingestion.load_raw --force    # reload everything
+    python loaders/run_all.py                    # load all new/changed sources
+    python loaders/run_all.py --only SRC07       # one or more sources
+    python loaders/run_all.py --force            # reload even if unchanged
 
-**Post-load check.** After each insert, the loader compares the number of rows in the file with the number of rows in the table. If they differ, the transaction is rolled back and the run is marked `failed`.
+The skip is based on the file content only. After changing loader code or `config.py`, run with `--force`, or the old data stays in place.
+
+**Pre-load check (optional, no database).** `python loaders/reader.py` reads every source and compares row counts with the data profile. It also flags columns that are not text, and values that look like floats (`123.0`).
 
 #### Ingestion Log
 
-`raw.ingest_log` keeps one row per source table per run. It is the audit trail for the Bronze layer: what was loaded, when, from which file version, and whether it worked.
+`raw.ingest_log` keeps one row per sheet, or per CSV file, per run. It is the audit trail for the Bronze layer: what was loaded, when, from which file version, and whether it worked. It is created by `init_db.sql`, with an index on `(source_id, file_hash, status)` for the skip lookup.
 
 | Column | Type | Description |
 |---|---|---|
 | `log_id` | BIGSERIAL PK | |
-| `batch_id` | UUID | Run identifier (same as `_batch_id` in the data) |
+| `batch_id` | TEXT | Run identifier (same as `_batch_id` in the data) |
 | `source_id` | TEXT | `SRC01` … `SRC10` |
-| `source_file` | TEXT | File name |
-| `sheet_name` | TEXT | Sheet (NULL for CSV) |
-| `target_table` | TEXT | e.g. `raw.employee_v2` |
+| `file_name` | TEXT | Source file name |
 | `file_hash` | TEXT | SHA-256 of the file |
-| `rows_in_file` | INT | Rows read from the file |
-| `rows_loaded` | INT | Rows inserted |
+| `sheet` | TEXT | Sheet name (NULL for CSV and for skipped/failed files) |
+| `target_table` | TEXT | e.g. `raw.src07_employee_master` |
+| `row_count` | INT | Rows read from the file and loaded |
 | `status` | TEXT | `success` / `skipped` (unchanged hash) / `failed` |
-| `error_message` | TEXT | Exception text if failed |
+| `error` | TEXT | Exception text if failed (first 2,000 characters) |
 | `started_at` / `finished_at` | TIMESTAMPTZ | Load duration |
 
 Example: check the latest run
 
-    SELECT source_id, target_table, status, rows_in_file, rows_loaded,
+    SELECT source_id, sheet, target_table, status, row_count,
            finished_at - started_at AS duration
     FROM raw.ingest_log
-    WHERE batch_id = (SELECT batch_id FROM raw.ingest_log ORDER BY started_at DESC LIMIT 1)
-    ORDER BY source_id;
+    WHERE batch_id = (SELECT batch_id FROM raw.ingest_log ORDER BY log_id DESC LIMIT 1)
+    ORDER BY source_id, sheet;
 
-**Bronze is done when** a single command loads all 10 sources (14 raw tables). For each table, `rows_loaded` must match the row count above, and a second run reports every source as `skipped`.
+**Bronze is done when** a single command loads all 10 sources into 11 raw tables. Each `row_count` must match the table above, and a second run must report every source as `skipped`.
 
 ### B. Bronze Data Profiling
 
