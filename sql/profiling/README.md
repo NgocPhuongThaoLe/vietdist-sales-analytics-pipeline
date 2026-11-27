@@ -24,8 +24,9 @@ docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB
 | `promotion_products.sql` | DQ17 promotion → products split | `orphan_product_ids = 0`, `empty_parts = 0`, `duplicate_pairs = 0` | pass; 145 bridge rows (2026-11-28) |
 | `target_overlap.sql` | DQ18 target version overlap | `version_sheet_mismatch = 0`, `duplicate_keys = 0`, `v2_months_missing_in_v1 = 0`; v1 H2 rows without v2 = resigned employees | pass; 48 v1 H2 rows without v2, decision open in A-DQ18 (2026-11-28) |
 
-All results are from raw batch `cdaee7385083`. On Windows PowerShell, `<` does not work; pipe the file instead:
+All results are from raw batch `cdaee7385083`. On Windows PowerShell, `<` does not work; pipe the file instead. Set UTF-8 first: Windows PowerShell 5.1 pipes text to native programs as ASCII, which turns Vietnamese literals such as `'Chuyển vùng'` into `?`, so `territory_vs_transfers.sql` would silently return 0 transfers:
 
 ```powershell
-Get-Content sql/profiling/grain_src01.sql | docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
+$OutputEncoding = New-Object System.Text.UTF8Encoding $false
+Get-Content -Encoding UTF8 sql/profiling/grain_src01.sql | docker compose exec -T postgres sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 ```
