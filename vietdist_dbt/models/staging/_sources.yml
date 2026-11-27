@@ -1,0 +1,31 @@
+version: 2
+
+sources:
+  - name: raw
+    description: "Bronze layer: the 10 source files loaded as text by loaders/run_all.py (empty cells = NULL, plus metadata columns _row_number, _batch_id, _source_file, _sheet_name, _file_hash, _loaded_at)."
+    schema: raw
+    config:
+      loaded_at_field: _loaded_at
+    tables:
+      - name: src01_sales_transactions
+        description: "SRC01 sales order lines to retail customers, one row per order_id + product_id."
+      - name: src02_sales_target
+        description: "SRC02 monthly sales targets per employee; sheets Plan_v1_Original and Plan_v2_Adjustment_H2 (version in _sheet_name / plan_version)."
+      - name: src03_customer_master
+        description: "SRC03 customer master, one row per customer."
+      - name: src04_product_master
+        description: "SRC04 product master (sheet Products), one row per product."
+      - name: src05_distributor_orders
+        description: "SRC05 distributor order lines (sheet Orders), one row per order_id + product_id."
+      - name: src06_distributor_master
+        description: "SRC06 distributor master with the assigned supervisor."
+      - name: src07_employee_master
+        description: "SRC07 employee master; sheets Employee_v1_StartYear and Employee_v2_Adjustment (resign_date filled in v2 only)."
+      - name: src07_employee_change_log
+        description: "SRC07 Change_Log sheet: resignations and region transfers, effective 2024-07-01."
+      - name: src08_territory_mapping
+        description: "SRC08 customer to employee territory mapping, one version (v1, from 2024-01-01)."
+      - name: src09_return_transactions
+        description: "SRC09 returned sales lines, linked to SRC01 by original_order_id + product_id."
+      - name: src10_promotion_program
+        description: "SRC10 promotion programmes; applicable_products is a '|'-separated list of product ids."

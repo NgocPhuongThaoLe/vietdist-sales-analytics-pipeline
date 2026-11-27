@@ -1,0 +1,5 @@
+# dbt_utils 1.4.1 is the latest release on hub.getdbt.com (checked 2026-11-28).
+# It requires dbt >=1.3.0, <3.0.0; requirements.txt pins dbt-core 1.12.7.
+packages:
+  - package: dbt-labs/dbt_utils
+    version: 1.4.1
