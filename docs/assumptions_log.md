@@ -5,6 +5,7 @@ Business rules chosen where the source data allows more than one reading. Each e
 | ID | Assumption | Status | Decided |
 |---|---|---|---|
 | A-DQ08 | Resign date rule | Decided | 2026-11-28 |
+| A-DQ18 | Sales target: v1 H2 rows of resigned employees | Open – decision needed | – |
 
 ---
 
@@ -46,3 +47,34 @@ Business rules chosen where the source data allows more than one reading. Each e
 **Where it is applied**
 - Silver: `is_post_resign_sale` on the sales staging model; warn-level test that the flagged count is 547; test that staging net revenue equals raw.
 - Gold: `dim_employee` SCD2 validity dates as above; `fact_sales` carries the flag.
+
+---
+
+## A-DQ18 – Sales target: v1 H2 rows of resigned employees
+
+**Issue:** [DQ18](data_issues.md) – target versions overlap for July–December.
+
+**Status:** Open – decision needed. Nothing is decided yet; the Silver model must not pick an option until this entry is closed.
+
+**Facts** (`sql/profiling/target_overlap.sql`, run 2026-11-28 on raw batch `cdaee7385083`)
+
+| Measure | v1 (`Plan_v1_Original`) | v2 (`Plan_v2_Adjustment_H2`) |
+|---|---|---|
+| Rows | 1,332 | 618 |
+| Employees | 111 | 103 |
+| Rows months 1–6 | 666 | 0 |
+| Rows months 7–12 | 666 | 618 |
+| Target revenue months 7–12 (VND) | 139,999,600,000 | 139,998,000,000 |
+
+- `plan_version` agrees with `_sheet_name` on every row (`version_sheet_mismatch = 0`); 0 duplicates on (`plan_version`, `employee_id`, `year`, `month`); every v2 employee-month also exists in v1 (`v2_months_missing_in_v1 = 0`).
+- 618 v1 H2 rows are replaced by a v2 row. The other **48 v1 H2 rows** (6 months × 8 employees) have no v2 row. The 8 employees are exactly the resigned employees in SRC07 `Employee_v2_Adjustment` (`resigned_with_v2_rows = 0`, `without_v2_not_resigned = 0`): EMP1035, EMP1046, EMP1048, EMP1051, EMP1054, EMP1070, EMP1075, EMP1100.
+- Those 48 rows hold 10,743,800,000 VND of target revenue. v2 raised the H2 target of the 103 remaining employees by 10,742,200,000 VND compared with their v1 H2 rows, so the H2 company total is almost unchanged. This suggests v2 moved the resigned employees' targets to the remaining reps.
+
+**Options**
+
+| Option | Rule | Latest rows (`is_latest = true`) | Effect |
+|---|---|---|---|
+| (a) Superseded | The 48 v1 H2 rows of resigned employees get `is_latest = false`; latest = v1 months 1–6 + all of v2 | 1,284 | H2 latest target = v2 total (139,998,000,000 VND). Resigned employees have no H2 target |
+| (b) Kept | The 48 rows stay `is_latest = true`; latest = v1 months 1–6 + v2 + the 48 rows | 1,332 | H2 latest target includes the 10,743,800,000 VND of the 48 rows on top of v2, which already re-assigned almost the same amount |
+
+**Where it will be applied:** `stg_sales_target` (`plan_version`, `is_latest`), `fact_targets`, `mart_sales_vs_target`. Planned test: count of `is_latest` rows = the figure of the chosen option.
