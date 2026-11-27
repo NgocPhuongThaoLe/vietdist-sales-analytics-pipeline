@@ -3,22 +3,23 @@
 credentials/
 
 # python
-.venv/
+.venv*/
 __pycache__/
 *.pyc
+.ipynb_checkpoints/
 
-# dbt build output
-dbt/vietdist/target/
-dbt/vietdist/dbt_packages/
-dbt/vietdist/logs/
+# dbt build output (vietdist_dbt/.gitignore covers the project folder too)
+vietdist_dbt/target/
+vietdist_dbt/dbt_packages/
+vietdist_dbt/logs/
 logs/
+.user.yml
 
-# raw data — downloaded separately (README section E)
+# raw data – downloaded separately from the GitHub Release (README section II.E)
 data/raw/*
 !data/raw/.gitkeep
 
-# OS junk
+# editor / OS
+.vscode/
 .DS_Store
 Thumbs.db
-
-.user.yml
