@@ -12,11 +12,13 @@ Power BI Desktop connects to the Gold layer to report on sales performance and d
 Week 1 – Bronze layer (v0.2.0):
 - Bronze load: verified 2026-11-27. All 10 sources load into 11 raw tables, every row count matches section II.E, and a second run skips all 10 sources.
 - Item 7, source profiling (v0.2.2): done 2026-11-28. All 19 findings in [`docs/data_issues.md`](docs/data_issues.md) are verified with a count from a script in `sql/profiling/` or a saved notebook output; 0 partial, 0 unverified. One business rule is still open: A-DQ18 (how the 48 v1 H2 target rows of resigned employees count as latest) in [`docs/assumptions_log.md`](docs/assumptions_log.md).
-- Next: Week 2 – dbt staging models, `_sources.yml` and YAML tests.
+- Silver baseline (v0.2.3): one staging model in plain SQL, `staging.stg_sales_transactions`, passes 13 of 13 plain-SQL tests (section III.C). dbt is set up: `dbt deps`, `dbt debug` and `dbt parse` pass, `_sources.yml` declares the 11 raw tables; no dbt models yet.
+- Next: Week 2 – dbt staging models (masters first) with YAML tests.
 
 ## Changelog
 | Date | Version | Changes |
 | --- | --- | --- |
+| 2026-11-28 | 0.2.3 | - Silver (plain SQL): `stg_sales_transactions` + 13 tests in `sql/silver/` (13/13 pass).<br>- Added `docs/pain_points.md` (why dbt).<br>- dbt: `dbt_utils` 1.4.1, `_sources.yml` (11 raw tables).<br>- Fix: PowerShell UTF-8 tip in `sql/profiling/README.md`. |
 | 2026-11-28 | 0.2.2 | - Profiling done: all 19 findings in `docs/data_issues.md` verified.<br>- New scripts in `sql/profiling/`: `derived_columns_src01.sql` (DQ14), `order_header_consistency.sql` (DQ15), `target_overlap.sql` (DQ18), `returns_on_undelivered.sql` (DQ16), `off_territory_sales.sql` (DQ09), `territory_vs_transfers.sql` (DQ11), `promotion_products.sql` (DQ17).<br>- `docs/assumptions_log.md`: added A-DQ18 (open – decision needed).<br>- `sql/profiling/README.md`: every script with pass condition and result.<br>- README: project status, section I.D and III.B match the profiling results; DQ08 counts added; `assumptions_log.md` no longer marked planned. |
 | 2026-11-27 | 0.2.1 | - Raw tables: empty cells → `NULL`; added `_row_number` for traceability.<br>- `init_db.sql` is the single source for schemas and `ingest_log`; loader stops on column changes.<br>- Config: port `5433` consistent, added `profiles.example.yml` + env scripts, dbt `marts:` → `dwh:`.<br>- Profiling: `docs/data_issues.md` + 5 scripts in `sql/profiling/`.<br>- Cleanup: unused code/files removed, `requirements.txt` direct deps only, README matches repo. |
 | 2026-11-26 | 0.2.0 | - Added `loader.py` and `run_all.py`.<br>- Removed old `db.py` and `load_raw.py` (replaced by `loader.py` + `run_all.py`).<br>- Added `init_db.sql` (schemas `raw`, `staging`, `dwh`, `snapshots` + `raw.ingest_log` with lookup index).<br>- Switched raw load from multi-row INSERT to Postgres `COPY` (SRC01 119k rows: minutes → ~10 s).<br>- Fixed sheet names in `config.py`.<br>- `reader.py` self-check: updated expected row counts to the real sheet names; a missing expected count is now flagged as `CHECK` instead of passing; the float-like check (`123.0`) now runs on ID/code/phone/tax columns only.<br>- Fixed Docker port mapping to `5433:5432`; use `127.0.0.1` as host on Windows.<br>- All 10 sources loaded into 11 raw tables; row counts match the data profile.<br>- Rewrote README Section III.A to match the implementation. |
@@ -261,8 +263,9 @@ vietdist-sales-distribution-analytics/
 ├── vietdist_dbt/                   # Layers 2 & 3 – Transform (dbt Core)
 │   ├── dbt_project.yml
 │   ├── profiles.example.yml        # Template: copy to ~/.dbt/profiles.yml (no secrets, reads env vars)
-│   ├── models/                     # (planned, week 2+)
-│   │   ├── staging/                # 1 view per source (stg_*) + _sources.yml + _stg_models.yml
+│   ├── packages.yml                # dbt_utils (package-lock.yml pins the resolved version)
+│   ├── models/
+│   │   ├── staging/                # _sources.yml (11 raw tables); (planned) 1 view per source (stg_*) + _stg_models.yml
 │   │   └── dwh/
 │   │       ├── dims/               # 6 dimensions
 │   │       ├── facts/              # 4 facts
@@ -278,7 +281,8 @@ vietdist-sales-distribution-analytics/
 │   └── 01_source_columns.ipynb     # Column names and inferred types (section I.B)
 │
 ├── sql/
-│   └── profiling/                  # SQL checks behind docs/data_issues.md (one script per finding)
+│   ├── profiling/                  # SQL checks behind docs/data_issues.md (one script per finding)
+│   └── silver/                     # Plain-SQL baseline: stg_sales_transactions.sql, tests/, run_tests.sh / .ps1
 │
 ├── scripts/
 │   ├── load_env.sh                 # Loads .env into the shell (macOS/Linux)
@@ -288,6 +292,7 @@ vietdist-sales-distribution-analytics/
 │
 ├── docs/
 │   ├── data_issues.md              # Known data issues: count, evidence, Silver handling, planned test
+│   ├── pain_points.md              # Problems of building Silver in plain SQL (why dbt)
 │   ├── data_dictionary.md          # (planned)
 │   └── assumptions_log.md          # Business rules chosen where the data allows more than one reading
 │
@@ -681,6 +686,17 @@ Example: check the latest run
 Before building Silver, every source file was profiled in [`notebooks/00_source_exploration.ipynb`](notebooks/00_source_exploration.ipynb): row counts, data types, null rates, candidate keys and an automatic foreign-key scan across all files. The findings are listed in [`docs/data_issues.md`](docs/data_issues.md), each with its count, the notebook cell it comes from, how Silver will handle it and the dbt test that will guard it. Every count is now proven: 13 SQL scripts in [`sql/profiling/`](sql/profiling/) run against the raw tables (batch `cdaee7385083`), and the rest come from saved notebook outputs. All 19 findings are verified. The scripts prove the grain (SRC01 and SRC05 unique on `order_id` + `product_id`), the foreign keys, the data period (`dim_date` must reach 2025-01-02) and the issues the Silver layer has to handle: 547 sales after the resign date, 4,192 off-territory lines (all caused by customers still mapped to resigned reps), 85 territory rows not updated for the July transfers, the half-to-even rounding of `discount_amount`, three line-level fields in SRC01, the 145-row promotion × product bridge and the 48 overlapping target rows. Where the data allows more than one reading, the rule is recorded in [`docs/assumptions_log.md`](docs/assumptions_log.md): A-DQ08 (resign date) is decided, A-DQ18 (target rows of resigned employees) is open. Each finding then becomes a dbt test in the Silver layer, so the checks run on every build instead of only once.
 
 ### C. Silver Layer
+
+#### Plain-SQL baseline (before dbt)
+
+To show what dbt replaces, the first staging model is built by hand in [`sql/silver/`](sql/silver/):
+
+- [`stg_sales_transactions.sql`](sql/silver/stg_sales_transactions.sql) creates the view `staging.stg_sales_transactions` from `raw.src01_sales_transactions`. It is a chain of commented CTEs (explicit select, fake nulls to `NULL`, casts, trim and Unicode NFC, dedup on `order_id` + `product_id`, drop derived and dimension columns, `is_post_resign_sale`). Each step cites its issue in [`docs/data_issues.md`](docs/data_issues.md). The header states the contract: 119,101 rows, net 158,957,563,200 VND, money as `numeric(18,2)`.
+- Amounts follow DQ14: `gross_amount` is recomputed as `quantity * unit_price`; the stored `discount_amount` and `net_amount` are kept, because the source rounds the discount half-to-even to 100 VND and net must reconcile to raw.
+- [`tests/`](sql/silver/tests/) holds 13 tests, one file each. Like dbt tests, each returns its failing rows (0 rows = pass): PK not null and unique, 3 FKs, quantity > 0, accepted values for the 3 line-level fields (DQ15), net = gross − discount, row count, net total and the 547 post-resign flags (A-DQ08).
+- `bash sql/silver/run_tests.sh` or `powershell -ExecutionPolicy Bypass -File sql/silver/run_tests.ps1` rebuilds the view and prints `PASS` / `FAIL` per file. Result on 2026-11-28: 13 of 13 pass.
+
+What this costs compared with dbt (run order, lineage, copy-paste tests, two runners, no docs) is listed in [`docs/pain_points.md`](docs/pain_points.md). From the next model on, Silver is built in dbt.
 #### Cleaning and Standardisation
 #### Sales Target Versioning
 
