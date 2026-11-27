@@ -11,12 +11,13 @@ Power BI Desktop connects to the Gold layer to report on sales performance and d
 
 Week 1 – Bronze layer (v0.2.0):
 - Bronze load: verified 2026-11-27. All 10 sources load into 11 raw tables, every row count matches section II.E, and a second run skips all 10 sources.
-- Item 7, source profiling: in progress – evidence being rebuilt. 12 of 19 findings in [`docs/data_issues.md`](docs/data_issues.md) are verified (grain, foreign keys, date range and the resign-date rule proven with `sql/profiling/`); 4 are partial and 3 unverified.
+- Item 7, source profiling (v0.2.2): done 2026-11-28. All 19 findings in [`docs/data_issues.md`](docs/data_issues.md) are verified with a count from a script in `sql/profiling/` or a saved notebook output; 0 partial, 0 unverified. One business rule is still open: A-DQ18 (how the 48 v1 H2 target rows of resigned employees count as latest) in [`docs/assumptions_log.md`](docs/assumptions_log.md).
 - Next: Week 2 – dbt staging models, `_sources.yml` and YAML tests.
 
 ## Changelog
 | Date | Version | Changes |
 | --- | --- | --- |
+| 2026-11-28 | 0.2.2 | - Profiling done: all 19 findings in `docs/data_issues.md` verified.<br>- New scripts in `sql/profiling/`: `derived_columns_src01.sql` (DQ14), `order_header_consistency.sql` (DQ15), `target_overlap.sql` (DQ18), `returns_on_undelivered.sql` (DQ16), `off_territory_sales.sql` (DQ09), `territory_vs_transfers.sql` (DQ11), `promotion_products.sql` (DQ17).<br>- `docs/assumptions_log.md`: added A-DQ18 (open – decision needed).<br>- `sql/profiling/README.md`: every script with pass condition and result.<br>- README: project status, section I.D and III.B match the profiling results; DQ08 counts added; `assumptions_log.md` no longer marked planned. |
 | 2026-11-27 | 0.2.1 | - Raw tables: empty cells → `NULL`; added `_row_number` for traceability.<br>- `init_db.sql` is the single source for schemas and `ingest_log`; loader stops on column changes.<br>- Config: port `5433` consistent, added `profiles.example.yml` + env scripts, dbt `marts:` → `dwh:`.<br>- Profiling: `docs/data_issues.md` + 5 scripts in `sql/profiling/`.<br>- Cleanup: unused code/files removed, `requirements.txt` direct deps only, README matches repo. |
 | 2026-11-26 | 0.2.0 | - Added `loader.py` and `run_all.py`.<br>- Removed old `db.py` and `load_raw.py` (replaced by `loader.py` + `run_all.py`).<br>- Added `init_db.sql` (schemas `raw`, `staging`, `dwh`, `snapshots` + `raw.ingest_log` with lookup index).<br>- Switched raw load from multi-row INSERT to Postgres `COPY` (SRC01 119k rows: minutes → ~10 s).<br>- Fixed sheet names in `config.py`.<br>- `reader.py` self-check: updated expected row counts to the real sheet names; a missing expected count is now flagged as `CHECK` instead of passing; the float-like check (`123.0`) now runs on ID/code/phone/tax columns only.<br>- Fixed Docker port mapping to `5433:5432`; use `127.0.0.1` as host on Windows.<br>- All 10 sources loaded into 11 raw tables; row counts match the data profile.<br>- Rewrote README Section III.A to match the implementation. |
 | 2026-11-24 | 0.1.5 | - Added `reader.py`. |
@@ -98,13 +99,13 @@ Report sheets (`Summary` in SRC02, `Category_Summary` in SRC04) are excluded fro
 The source files contain deliberate quality issues. Bronze loads them as-is; Silver handles and tests them. Full list, counts and evidence: [`docs/data_issues.md`](docs/data_issues.md).
 
 - Grain and foreign keys are clean: SRC01 and SRC05 are unique on `order_id` + `product_id`, and every return, distributor supervisor, customer, product and employee reference resolves.
-- Sales after an employee's resign date: 547 lines, 736,436,300 VND net, across 8 employees (rule `order_date > resign_date`, see [`docs/assumptions_log.md`](docs/assumptions_log.md)). Sales by a rep outside the customer's territory (count TBD).
-- 157 customers have no territory mapping. The mapping was not updated for the 5 July region transfers (affected rows TBD).
+- Sales after an employee's resign date: 547 lines, 736,436,300 VND net, across 8 employees (rule `order_date > resign_date`, see [`docs/assumptions_log.md`](docs/assumptions_log.md)). Sales by a rep who is not the customer's mapped rep: 4,192 lines (5,625,298,000 VND), all in July–December and all to customers still mapped to the 8 resigned employees.
+- 157 customers have no territory mapping. The mapping was not updated for the 5 July region transfers: all 85 SRC08 rows of these employees still show the old region.
 - `phone` and `tax_code` are read as numbers by default (leading zeros lost); `tax_code` is 51.7% null in SRC03.
-- SRC01 stores derived columns (month, quarter, year, amounts; consistency TBD), and order-level fields such as `delivery_status` differ between lines of the same order (count TBD).
-- Returns linked to sales lines that were cancelled or still delivering (count TBD).
-- SRC10 `applicable_products` holds several product ids separated by `|`.
-- Sales target v1 and v2 overlap for July–December.
+- SRC01 stores derived columns (month, quarter, year, amounts). All match their base columns except `discount_amount`, which is rounded half-to-even to 100 VND (13,971 rows differ by up to 50 VND). `delivery_status`, `payment_method` and `payment_status` differ between lines of the same order (10,904, 28,666 and 18,861 of 50,000 orders), so they are line-level.
+- Returns linked to sales lines that were cancelled or still delivering: 0. All 3,665 returns point to a delivered line.
+- SRC10 `applicable_products` holds several product ids separated by `|` (36 of 40 promotions; 145 promotion × product pairs, all in the product master).
+- Sales target v1 and v2 overlap for July–December: 618 v1 rows are re-planned in v2; 48 v1 rows of the 8 resigned employees have no v2 row (rule open, A-DQ18).
 - 219 SRC05 `expected_delivery_date` values fall in 2025, so `dim_date` must reach 2025-01-02. SRC08 uses `9999-12-31` as an open end date.
 
 ### E. Business Requirements
@@ -277,7 +278,7 @@ vietdist-sales-distribution-analytics/
 │   └── 01_source_columns.ipynb     # Column names and inferred types (section I.B)
 │
 ├── sql/
-│   └── profiling/                  # SQL checks behind docs/data_issues.md (grain, FKs, data period)
+│   └── profiling/                  # SQL checks behind docs/data_issues.md (one script per finding)
 │
 ├── scripts/
 │   ├── load_env.sh                 # Loads .env into the shell (macOS/Linux)
@@ -677,7 +678,7 @@ Example: check the latest run
 
 ### B. Source Profiling (findings → silver tests)
 
-Before building Silver, every source file was profiled in [`notebooks/00_source_exploration.ipynb`](notebooks/00_source_exploration.ipynb): row counts, data types, null rates, candidate keys and an automatic foreign-key scan across all files. The findings are listed in [`docs/data_issues.md`](docs/data_issues.md), each with its count, the notebook cell it comes from, how Silver will handle it and the dbt test that will guard it. Grain, foreign keys and the data period are proven with SQL scripts in [`sql/profiling/`](sql/profiling/), run against the raw tables: SRC01 and SRC05 are unique on `order_id` + `product_id`, every return matches a sales line, and `dim_date` must reach 2025-01-02. Sales after the resign date are proven too: 547 lines, 736,436,300 VND net, across 8 employees, under the rule recorded in [`docs/assumptions_log.md`](docs/assumptions_log.md). Others are still `TBD`, mainly the off-territory and derived-column checks, and will get their own scripts. Each finding then becomes a dbt test in the Silver layer, so the checks run on every build instead of only once in a notebook.
+Before building Silver, every source file was profiled in [`notebooks/00_source_exploration.ipynb`](notebooks/00_source_exploration.ipynb): row counts, data types, null rates, candidate keys and an automatic foreign-key scan across all files. The findings are listed in [`docs/data_issues.md`](docs/data_issues.md), each with its count, the notebook cell it comes from, how Silver will handle it and the dbt test that will guard it. Every count is now proven: 13 SQL scripts in [`sql/profiling/`](sql/profiling/) run against the raw tables (batch `cdaee7385083`), and the rest come from saved notebook outputs. All 19 findings are verified. The scripts prove the grain (SRC01 and SRC05 unique on `order_id` + `product_id`), the foreign keys, the data period (`dim_date` must reach 2025-01-02) and the issues the Silver layer has to handle: 547 sales after the resign date, 4,192 off-territory lines (all caused by customers still mapped to resigned reps), 85 territory rows not updated for the July transfers, the half-to-even rounding of `discount_amount`, three line-level fields in SRC01, the 145-row promotion × product bridge and the 48 overlapping target rows. Where the data allows more than one reading, the rule is recorded in [`docs/assumptions_log.md`](docs/assumptions_log.md): A-DQ08 (resign date) is decided, A-DQ18 (target rows of resigned employees) is open. Each finding then becomes a dbt test in the Silver layer, so the checks run on every build instead of only once.
 
 ### C. Silver Layer
 #### Cleaning and Standardisation
