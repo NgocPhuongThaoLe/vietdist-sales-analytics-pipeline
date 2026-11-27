@@ -11,7 +11,7 @@ Power BI Desktop connects to the Gold layer to report on sales performance and d
 
 Week 1 – Bronze layer (v0.2.0):
 - Bronze load: verified 2026-11-27. All 10 sources load into 11 raw tables, every row count matches section II.E, and a second run skips all 10 sources.
-- Item 7, source profiling: in progress – evidence being rebuilt. 11 of 19 findings in [`docs/data_issues.md`](docs/data_issues.md) are verified (grain, foreign keys and date range proven with `sql/profiling/`); 4 are partial and 4 still TBD.
+- Item 7, source profiling: in progress – evidence being rebuilt. 12 of 19 findings in [`docs/data_issues.md`](docs/data_issues.md) are verified (grain, foreign keys, date range and the resign-date rule proven with `sql/profiling/`); 4 are partial and 3 unverified.
 - Next: Week 2 – dbt staging models, `_sources.yml` and YAML tests.
 
 ## Changelog
@@ -98,7 +98,7 @@ Report sheets (`Summary` in SRC02, `Category_Summary` in SRC04) are excluded fro
 The source files contain deliberate quality issues. Bronze loads them as-is; Silver handles and tests them. Full list, counts and evidence: [`docs/data_issues.md`](docs/data_issues.md).
 
 - Grain and foreign keys are clean: SRC01 and SRC05 are unique on `order_id` + `product_id`, and every return, distributor supervisor, customer, product and employee reference resolves.
-- Sales after an employee's resign date, and sales by a rep outside the customer's territory (counts TBD).
+- Sales after an employee's resign date: 547 lines, 736,436,300 VND net, across 8 employees (rule `order_date > resign_date`, see [`docs/assumptions_log.md`](docs/assumptions_log.md)). Sales by a rep outside the customer's territory (count TBD).
 - 157 customers have no territory mapping. The mapping was not updated for the 5 July region transfers (affected rows TBD).
 - `phone` and `tax_code` are read as numbers by default (leading zeros lost); `tax_code` is 51.7% null in SRC03.
 - SRC01 stores derived columns (month, quarter, year, amounts; consistency TBD), and order-level fields such as `delivery_status` differ between lines of the same order (count TBD).
@@ -288,7 +288,7 @@ vietdist-sales-distribution-analytics/
 ├── docs/
 │   ├── data_issues.md              # Known data issues: count, evidence, Silver handling, planned test
 │   ├── data_dictionary.md          # (planned)
-│   └── assumptions_log.md          # (planned)
+│   └── assumptions_log.md          # Business rules chosen where the data allows more than one reading
 │
 ├── images/                         # Architecture and data flow diagrams used in this README
 │
@@ -677,7 +677,7 @@ Example: check the latest run
 
 ### B. Source Profiling (findings → silver tests)
 
-Before building Silver, every source file was profiled in [`notebooks/00_source_exploration.ipynb`](notebooks/00_source_exploration.ipynb): row counts, data types, null rates, candidate keys and an automatic foreign-key scan across all files. The findings are listed in [`docs/data_issues.md`](docs/data_issues.md), each with its count, the notebook cell it comes from, how Silver will handle it and the dbt test that will guard it. Grain, foreign keys and the data period are proven with SQL scripts in [`sql/profiling/`](sql/profiling/), run against the raw tables: SRC01 and SRC05 are unique on `order_id` + `product_id`, every return matches a sales line, and `dim_date` must reach 2025-01-02. Others are still `TBD`, mainly the resign-date, off-territory and derived-column checks, and will get their own scripts. Each finding then becomes a dbt test in the Silver layer, so the checks run on every build instead of only once in a notebook.
+Before building Silver, every source file was profiled in [`notebooks/00_source_exploration.ipynb`](notebooks/00_source_exploration.ipynb): row counts, data types, null rates, candidate keys and an automatic foreign-key scan across all files. The findings are listed in [`docs/data_issues.md`](docs/data_issues.md), each with its count, the notebook cell it comes from, how Silver will handle it and the dbt test that will guard it. Grain, foreign keys and the data period are proven with SQL scripts in [`sql/profiling/`](sql/profiling/), run against the raw tables: SRC01 and SRC05 are unique on `order_id` + `product_id`, every return matches a sales line, and `dim_date` must reach 2025-01-02. Sales after the resign date are proven too: 547 lines, 736,436,300 VND net, across 8 employees, under the rule recorded in [`docs/assumptions_log.md`](docs/assumptions_log.md). Others are still `TBD`, mainly the off-territory and derived-column checks, and will get their own scripts. Each finding then becomes a dbt test in the Silver layer, so the checks run on every build instead of only once in a notebook.
 
 ### C. Silver Layer
 #### Cleaning and Standardisation
