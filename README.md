@@ -9,10 +9,15 @@ Power BI Desktop connects to the Gold layer to report on sales performance and d
 
 ## Project Status
 
+Week 1 – Bronze layer (v0.2.0):
+- Bronze load: verified 2026-11-27. All 10 sources load into 11 raw tables, every row count matches section II.E, and a second run skips all 10 sources.
+- Item 7, source profiling: in progress – evidence being rebuilt. 11 of 19 findings in [`docs/data_issues.md`](docs/data_issues.md) are verified (grain, foreign keys and date range proven with `sql/profiling/`); 4 are partial and 4 still TBD.
+- Next: Week 2 – dbt staging models, `_sources.yml` and YAML tests.
 
 ## Changelog
 | Date | Version | Changes |
 | --- | --- | --- |
+| 2026-11-27 | 0.2.1 | - Raw tables: empty cells → `NULL`; added `_row_number` for traceability.<br>- `init_db.sql` is the single source for schemas and `ingest_log`; loader stops on column changes.<br>- Config: port `5433` consistent, added `profiles.example.yml` + env scripts, dbt `marts:` → `dwh:`.<br>- Profiling: `docs/data_issues.md` + 5 scripts in `sql/profiling/`.<br>- Cleanup: unused code/files removed, `requirements.txt` direct deps only, README matches repo. |
 | 2026-11-26 | 0.2.0 | - Added `loader.py` and `run_all.py`.<br>- Removed old `db.py` and `load_raw.py` (replaced by `loader.py` + `run_all.py`).<br>- Added `init_db.sql` (schemas `raw`, `staging`, `dwh`, `snapshots` + `raw.ingest_log` with lookup index).<br>- Switched raw load from multi-row INSERT to Postgres `COPY` (SRC01 119k rows: minutes → ~10 s).<br>- Fixed sheet names in `config.py`.<br>- `reader.py` self-check: updated expected row counts to the real sheet names; a missing expected count is now flagged as `CHECK` instead of passing; the float-like check (`123.0`) now runs on ID/code/phone/tax columns only.<br>- Fixed Docker port mapping to `5433:5432`; use `127.0.0.1` as host on Windows.<br>- All 10 sources loaded into 11 raw tables; row counts match the data profile.<br>- Rewrote README Section III.A to match the implementation. |
 | 2026-11-24 | 0.1.5 | - Added `reader.py`. |
 | 2026-11-23 | 0.1.4 | - Added Bronze layer development documentation to the README (Section III.A)<br>- Added `config.py` as the central configuration module for the loaders. |
@@ -86,8 +91,21 @@ Report sheets (`Summary` in SRC02, `Category_Summary` in SRC04) are excluded fro
 **Observations**
 - The three transaction facts (SRC01, SRC05, SRC09) hold 158,711 rows, about 96% of all data. SRC01 alone is about 82% of the size on disk.
 - The dimensions are small: from 40 promotions to 2,000 customers.
-- At about 165k rows and 25 MB, the whole dataset fits in memory and a full reload takes seconds. Incremental loading is not needed for performance, but it is still implemented for SRC01 to show the pattern for a growing sales table.
+- At about 165k rows and 25 MB, the whole dataset fits in memory and a full reload takes seconds. Incremental loading is not needed for performance; it is planned for SRC01 later to show the pattern for a growing sales table. Today every source is a full refresh.
 
+### D. Known Data Quality Issues
+
+The source files contain deliberate quality issues. Bronze loads them as-is; Silver handles and tests them. Full list, counts and evidence: [`docs/data_issues.md`](docs/data_issues.md).
+
+- Grain and foreign keys are clean: SRC01 and SRC05 are unique on `order_id` + `product_id`, and every return, distributor supervisor, customer, product and employee reference resolves.
+- Sales after an employee's resign date, and sales by a rep outside the customer's territory (counts TBD).
+- 157 customers have no territory mapping. The mapping was not updated for the 5 July region transfers (affected rows TBD).
+- `phone` and `tax_code` are read as numbers by default (leading zeros lost); `tax_code` is 51.7% null in SRC03.
+- SRC01 stores derived columns (month, quarter, year, amounts; consistency TBD), and order-level fields such as `delivery_status` differ between lines of the same order (count TBD).
+- Returns linked to sales lines that were cancelled or still delivering (count TBD).
+- SRC10 `applicable_products` holds several product ids separated by `|`.
+- Sales target v1 and v2 overlap for July–December.
+- 219 SRC05 `expected_delivery_date` values fall in 2025, so `dim_date` must reach 2025-01-02. SRC08 uses `9999-12-31` as an open end date.
 
 ### E. Business Requirements
 The warehouse must answer five groups of business questions (BR1–BR5). Each requirement decides which facts, dimensions and marts are built in section F. BR1–BR3 are the priority for v1.0 (the three core Power BI pages); BR4–BR5 follow after v1.0.
@@ -155,13 +173,16 @@ This section covers required tools, repository structure, environment variables,
 If you already have Git, Docker Desktop and Python installed (commands shown for Windows PowerShell; macOS/Linux in comments):
 
 ```powershell
-git clone https://github.com/<your-username>/vietdist-sales-pipeline.git
-cd vietdist-sales-pipeline
+git clone https://github.com/NgocPhuongThaoLe/vietdist-sales-distribution-analytics.git
+cd vietdist-sales-distribution-analytics
 copy .env.example .env                       # macOS/Linux: cp .env.example .env
-docker compose up -d                         # starts PostgreSQL, creates schemas
+docker compose up -d                         # starts PostgreSQL on 127.0.0.1:5433, creates schemas
 python -m venv .venv
 .venv\Scripts\activate                       # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
+# Put the 10 source files in data\raw\ (section E)
+python loaders\reader.py                     # pre-check, no database: should end with "0 item(s) to check"
+python loaders\run_all.py                    # loads all 10 sources into schema raw
 mkdir $HOME\.dbt -Force                      # macOS/Linux: mkdir -p ~/.dbt
 copy vietdist_dbt\profiles.example.yml $HOME\.dbt\profiles.yml   # macOS/Linux: cp vietdist_dbt/profiles.example.yml ~/.dbt/profiles.yml
 . .\scripts\load_env.ps1                     # macOS/Linux: source scripts/load_env.sh
@@ -200,8 +221,8 @@ python --version        # should print 3.11.x – 3.13.x
 Clone the repository, then create a virtual environment and install dependencies:
 
 ```bash
-git clone https://github.com/<your-username>/vietdist-sales-pipeline.git
-cd vietdist-sales-pipeline
+git clone https://github.com/NgocPhuongThaoLe/vietdist-sales-distribution-analytics.git
+cd vietdist-sales-distribution-analytics
 
 python -m venv .venv
 .venv\Scripts\activate          # Windows  (macOS/Linux: source .venv/bin/activate)
@@ -209,14 +230,16 @@ pip install -r requirements.txt
 dbt --version                   # should show core 1.11+ and the postgres plugin
 ```
 
-All commands in this README run from the project root (`vietdist-sales-pipeline/`) unless stated otherwise. dbt commands run from `vietdist_dbt/`.
+All commands in this README run from the project root (`vietdist-sales-distribution-analytics/`) unless stated otherwise. dbt commands run from `vietdist_dbt/`.
 
 ---
 
 ### B. Repository Structure
 
+Items marked `(planned)` do not exist yet.
+
 ```text
-vietdist-sales-analytics-pipeline/
+vietdist-sales-distribution-analytics/
 ├── data/
 │   └── raw/                        # Source files go here (git-ignored, see section E)
 │       ├── .gitkeep                # Keeps the empty folder in Git
@@ -226,50 +249,51 @@ vietdist-sales-analytics-pipeline/
 │
 ├── docker/
 │   └── postgres/
-│       └── init_db.sql             # Creates schemas raw, staging, dwh, snapshots + ingest_log + roles
+│       └── init_db.sql             # Schemas raw, staging, dwh, snapshots + raw.ingest_log (single definition)
 │
 ├── loaders/                        # Layer 1 – Extract & Load (Python)
-│   ├── config.py                   # Reads .env, maps each source file → raw table
-│   ├── db.py                       # SQLAlchemy engine / connection helper
-│   ├── load_raw.py                 # Loads all 10 sources into schema raw
-│   └── ingest_log.py               # Writes one row per load to raw.ingest_log
+│   ├── config.py                   # Reads .env; SOURCES registry: file → sheet(s) → raw table
+│   ├── reader.py                   # Reads CSV/XLSX as text; `python loaders/reader.py` = pre-check without DB
+│   ├── loader.py                   # Hash check, metadata columns, TRUNCATE + COPY, raw.ingest_log
+│   └── run_all.py                  # Entry point: loads all sources (--only, --force)
 │
 ├── vietdist_dbt/                   # Layers 2 & 3 – Transform (dbt Core)
 │   ├── dbt_project.yml
 │   ├── profiles.example.yml        # Template: copy to ~/.dbt/profiles.yml (no secrets, reads env vars)
-│   ├── models/
+│   ├── models/                     # (planned, week 2+)
 │   │   ├── staging/                # 1 view per source (stg_*) + _sources.yml + _stg_models.yml
 │   │   └── dwh/
 │   │       ├── dims/               # 6 dimensions
 │   │       ├── facts/              # 4 facts
 │   │       ├── bridges/            # bridge_promotion_product
 │   │       └── marts/              # 3 marts for Power BI
-│   ├── snapshots/                  # dim_employee SCD Type 2
-│   ├── tests/                      # Singular (custom SQL) tests
+│   ├── snapshots/                  # (planned) dim_employee SCD Type 2
+│   ├── tests/                      # (planned) Singular (custom SQL) tests
 │   └── macros/
 │       └── generate_schema_name.sql   # Uses schema names exactly as configured
 │
 ├── notebooks/
-│   └── 01_source_exploration.ipynb # Data profiling before modelling
+│   ├── 00_source_exploration.ipynb # Profiling before modelling (outputs feed docs/data_issues.md)
+│   └── 01_source_columns.ipynb     # Column names and inferred types (section I.B)
+│
+├── sql/
+│   └── profiling/                  # SQL checks behind docs/data_issues.md (grain, FKs, data period)
 │
 ├── scripts/
 │   ├── load_env.sh                 # Loads .env into the shell (macOS/Linux)
 │   └── load_env.ps1                # Loads .env into the shell (Windows PowerShell)
 │
-├── power_bi/
-│   └── vietdist_report.pbix        # 3 report pages, imports from schema dwh
+├── power_bi/                       # (planned) vietdist_report.pbix, 3 report pages from schema dwh
 │
 ├── docs/
-│   ├── architecture.png            # Three-layer architecture diagram
-│   ├── data_dictionary.md
-│   ├── data_issues.md
-│   └── assumptions_log.md
+│   ├── data_issues.md              # Known data issues: count, evidence, Silver handling, planned test
+│   ├── data_dictionary.md          # (planned)
+│   └── assumptions_log.md          # (planned)
 │
-├── images/                         # Screenshots used in README
+├── images/                         # Architecture and data flow diagrams used in this README
 │
-├── run_pipeline.py                 # One command: load raw → dbt build
 ├── docker-compose.yml              # PostgreSQL service
-├── requirements.txt                # Python + dbt dependencies
+├── requirements.txt                # Python + dbt dependencies (direct, pinned)
 ├── .env.example                    # Template for environment variables
 ├── .gitignore
 └── README.md
@@ -301,16 +325,16 @@ cp .env.example .env          # macOS / Linux
 ```dotenv
 # ---------- PostgreSQL (Docker) ----------
 POSTGRES_HOST=127.0.0.1
-POSTGRES_PORT=5432
+POSTGRES_PORT=5433
 POSTGRES_DB=vietdist
 POSTGRES_USER=vietdist_admin
 POSTGRES_PASSWORD=change_me_please
 
+# Optional: a full SQLAlchemy URL overrides the POSTGRES_* values for the loaders (CI / Airflow)
+# DATABASE_URL=postgresql+psycopg2://vietdist_admin:change_me_please@127.0.0.1:5433/vietdist
+
 # ---------- Loaders ----------
-RAW_DATA_DIR=./data/raw
-RAW_SCHEMA=raw
-# full_refresh = truncate and reload each raw table, append = add rows (incremental loads)
-LOAD_MODE=full_refresh
+RAW_DATA_DIR=data/raw
 
 # ---------- dbt ----------
 DBT_TARGET=dev
@@ -322,12 +346,11 @@ DBT_THREADS=4
 | Variable | Description | Default |
 |---|---|---|
 | `POSTGRES_HOST` | Database host. Use `127.0.0.1` rather than `localhost`: on Windows, `localhost` can resolve to IPv6 (`::1`) and reach a locally installed Postgres instead of the Docker container | `127.0.0.1` |
-| `POSTGRES_PORT` | Host port mapped to the container. Change it to e.g. `5433` if Postgres is already installed on your machine (check with `Get-Service *postgres*` on Windows) | `5432` |
+| `POSTGRES_PORT` | Host port mapped to the container (`docker-compose.yml` reads it). `5433` avoids a clash with a locally installed Postgres on `5432` (check with `Get-Service *postgres*` on Windows) | `5433` |
 | `POSTGRES_DB` | Database name | `vietdist` |
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` | Admin user created when the container starts **for the first time** | – |
-| `RAW_DATA_DIR` | Folder the loaders read source files from | `./data/raw` |
-| `RAW_SCHEMA` | Target schema for Layer 1 | `raw` |
-| `LOAD_MODE` | `full_refresh` truncates and reloads each raw table; `append` adds rows (used later for incremental loads) | `full_refresh` |
+| `DATABASE_URL` | Optional. Full SQLAlchemy URL; if set, the loaders use it instead of the `POSTGRES_*` values | not set |
+| `RAW_DATA_DIR` | Folder the loaders read source files from, relative to the project root | `data/raw` |
 | `DBT_TARGET` | dbt target (output) to use | `dev` |
 | `DBT_THREADS` | Number of models dbt builds in parallel | `4` |
 
@@ -353,7 +376,7 @@ vietdist_dbt:
     dev:
       type: postgres
       host: "{{ env_var('POSTGRES_HOST', '127.0.0.1') }}"
-      port: "{{ env_var('POSTGRES_PORT', '5432') | as_number }}"
+      port: "{{ env_var('POSTGRES_PORT', '5433') | as_number }}"
       dbname: "{{ env_var('POSTGRES_DB', 'vietdist') }}"
       user: "{{ env_var('POSTGRES_USER') }}"
       password: "{{ env_var('POSTGRES_PASSWORD') }}"
@@ -397,22 +420,7 @@ Without `macros/generate_schema_name.sql`, dbt would join the default and custom
 source scripts/load_env.sh          # macOS / Linux
 ```
 
-`scripts/load_env.ps1`:
-
-```powershell
-Get-Content .env | Where-Object { $_ -match '^\s*[^#].*=' } | ForEach-Object {
-    $name, $value = $_ -split '=', 2
-    [Environment]::SetEnvironmentVariable($name.Trim(), $value.Trim())
-}
-```
-
-`scripts/load_env.sh`:
-
-```bash
-set -a
-source .env
-set +a
-```
+Both scripts skip comment lines, set every `NAME=value` from `.env` for the current terminal only, and stop with a message if `.env` is missing.
 
 The Python loaders do not need this step; they read `.env` directly with `python-dotenv`.
 
@@ -420,7 +428,7 @@ The Python loaders do not need this step; they read `.env` directly with `python
 
 ### D. PostgreSQL Setup
 
-PostgreSQL runs in Docker, so there is nothing to install on your machine. On first start the container runs `docker/postgres/init_db.sql`, which creates the schemas, the ingest log and a read-only role.
+PostgreSQL runs in Docker, so there is nothing to install on your machine. On first start the container runs `docker/postgres/init_db.sql`, which creates the schemas and the ingest log.
 
 **1. `docker-compose.yml`:**
 
@@ -434,7 +442,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
     ports:
-      - "${POSTGRES_PORT}:5432"
+      - "${POSTGRES_PORT:-5433}:5432"
     volumes:
       - pg_data:/var/lib/postgresql/data
       - ./docker/postgres/init_db.sql:/docker-entrypoint-initdb.d/init_db.sql:ro
@@ -449,39 +457,11 @@ volumes:
   pg_data:
 ```
 
-Docker Compose fills in `${...}` from the `.env` file in the project root automatically. Inside the container Postgres always listens on `5432`; `POSTGRES_PORT` only changes the port on your machine.
+Docker Compose fills in `${...}` from the `.env` file in the project root automatically (`5433` if `POSTGRES_PORT` is not set). Inside the container Postgres always listens on `5432`; `POSTGRES_PORT` only changes the port on your machine.
 
-**2. `docker/postgres/init_db.sql`:**
+**2. `docker/postgres/init_db.sql`** creates the schemas `raw`, `staging`, `dwh` and `snapshots`, and the table `raw.ingest_log` (columns in section III.A, *Ingestion Log*). It is the only place these are defined. Every statement uses `IF NOT EXISTS`, and the loader runs the same file before each load, so an existing database picks up changes without a reset.
 
-```sql
--- Three-layer architecture
-CREATE SCHEMA IF NOT EXISTS raw;       -- Layer 1: Bronze (Python loaders)
-CREATE SCHEMA IF NOT EXISTS staging;   -- Layer 2: Silver (dbt views)
-CREATE SCHEMA IF NOT EXISTS dwh;       -- Layer 3: Gold  (dbt star schema + marts)
-CREATE SCHEMA IF NOT EXISTS snapshots; -- dbt snapshot (dim_employee SCD2)
-
--- One row per file load, written by the Python loaders
-CREATE TABLE IF NOT EXISTS raw.ingest_log (
-    ingest_id      BIGSERIAL PRIMARY KEY,
-    batch_id       UUID         NOT NULL,
-    source_file    TEXT         NOT NULL,
-    sheet_name     TEXT,
-    target_table   TEXT         NOT NULL,
-    rows_loaded    INTEGER,
-    status         TEXT         NOT NULL CHECK (status IN ('success', 'failed')),
-    error_message  TEXT,
-    started_at     TIMESTAMPTZ  NOT NULL,
-    finished_at    TIMESTAMPTZ
-);
-
--- Read-only role for Power BI.
--- Local demo password: change it with ALTER ROLE if this database is ever shared.
-CREATE ROLE powerbi_reader WITH LOGIN PASSWORD 'change_me_reader';
-GRANT USAGE ON SCHEMA dwh TO powerbi_reader;
-ALTER DEFAULT PRIVILEGES IN SCHEMA dwh GRANT SELECT ON TABLES TO powerbi_reader;
-```
-
-> The `powerbi_reader` password is a placeholder for a local demo with synthetic data. It is committed on purpose; real credentials never are.
+A read-only role for Power BI is planned for the Gold layer.
 
 **3. Start the database and check it is healthy:**
 
@@ -506,9 +486,9 @@ dbt debug                                  # should end with "All checks passed!
 | Setting | Value |
 |---|---|
 | Host | `127.0.0.1` |
-| Port | value of `POSTGRES_PORT` (default `5432`) |
+| Port | value of `POSTGRES_PORT` (default `5433`) |
 | Database | `vietdist` |
-| User | `vietdist_admin` (full access) or `powerbi_reader` (read-only, schema `dwh`) |
+| User | `vietdist_admin` (full access) |
 
 In DBeaver, create the connection via **Database → New Database Connection → PostgreSQL** (not via *Edit Driver*, which changes the driver for every connection).
 
@@ -522,7 +502,7 @@ In DBeaver, create the connection via **Database → New Database Connection →
 | `docker compose down -v` | Removes the container **and all data** – `init_db.sql` runs again on next `up` |
 | `docker compose logs -f postgres` | Follows the database log |
 
-> `init_db.sql` only runs when the volume is empty. If you change it, run `docker compose down -v` and `docker compose up -d` to apply it.
+> Docker runs `init_db.sql` only when the volume is empty. The loader also runs it before every load, so new schemas or tables added there appear on the next `python loaders/run_all.py`. Changing an existing column still needs `docker compose down -v` and `docker compose up -d` (this deletes all data).
 
 **Troubleshooting:**
 
@@ -543,7 +523,7 @@ In DBeaver, create the connection via **Database → New Database Connection →
 The source data is a synthetic dataset for a fictional Vietnamese FMCG distributor (VietDist), covering calendar year 2024. It contains 10 files (~25 MB) delivered as one zip archive. The raw files are **not committed** to Git (`data/raw/*` is in `.gitignore`, except `.gitkeep`).
 
 To get the data:
-1. Download `vietdist_sample_data.zip` from the [GitHub Release](https://github.com/<your-username>/vietdist-sales-pipeline/releases) page.
+1. Download `vietdist_sample_data.zip` from the [GitHub Releases](https://github.com/NgocPhuongThaoLe/vietdist-sales-distribution-analytics/releases) page.
 2. Extract it so the files sit directly in `data/raw/` (no sub-folder).
 3. Do not rename the files – the loaders match them by name.
 
@@ -552,15 +532,15 @@ To get the data:
 | ID | File | Format | Sheet(s) loaded | Rows | Raw table |
 |---|---|---|---|---|---|
 | SRC01 | `SRC01_sales_transactions.csv` | CSV | – | 119,101 lines (50,000 orders) | `raw.src01_sales_transactions` |
-| SRC02 | `SRC02_sales_target_plan.xlsx` | XLSX | v1, v2 (skip `Summary`) | 1,332 + 618 | `raw.src02_sales_target_plan` |
+| SRC02 | `SRC02_sales_target_plan.xlsx` | XLSX | `Plan_v1_Original`, `Plan_v2_Adjustment_H2` (skip `Summary`) | 1,332 + 618 | `raw.src02_sales_target` |
 | SRC03 | `SRC03_customer_master.csv` | CSV | – | 2,000 | `raw.src03_customer_master` |
-| SRC04 | `SRC04_product_master.xlsx` | XLSX | Products (skip `Category_Summary`) | 100 | `raw.src04_product_master` |
-| SRC05 | `SRC05_distributor_orders.xlsx` | XLSX | Orders | 35,945 lines (8,000 orders) | `raw.src05_distributor_orders` |
+| SRC04 | `SRC04_product_master.xlsx` | XLSX | `Products` (skip `Category_Summary`) | 100 | `raw.src04_product_master` |
+| SRC05 | `SRC05_distributor_orders.xlsx` | XLSX | `Orders` | 35,945 lines (8,000 orders) | `raw.src05_distributor_orders` |
 | SRC06 | `SRC06_distributor_master.csv` | CSV | – | 138 | `raw.src06_distributor_master` |
-| SRC07 | `SRC07_employee_master.xlsx` | XLSX | v1, v2, Change_Log | 114 + 114 + 13 | `raw.src07_employee_master`, `raw.src07_employee_change_log` |
-| SRC08 | `SRC08_territory_mapping.xlsx` | XLSX | Mapping | 1,843 | `raw.src08_territory_mapping` |
+| SRC07 | `SRC07_employee_master.xlsx` | XLSX | `Employee_v1_StartYear`, `Employee_v2_Adjustment`, `Change_Log` | 114 + 114 + 13 | `raw.src07_employee_master`, `raw.src07_employee_change_log` |
+| SRC08 | `SRC08_territory_mapping.xlsx` | XLSX | `Sheet1` | 1,843 | `raw.src08_territory_mapping` |
 | SRC09 | `SRC09_return_transactions.csv` | CSV | – | 3,665 | `raw.src09_return_transactions` |
-| SRC10 | `SRC10_promotion_program.xlsx` | XLSX | Promotions | 40 | `raw.src10_promotion_program` |
+| SRC10 | `SRC10_promotion_program.xlsx` | XLSX | `Sheet1` | 40 | `raw.src10_promotion_program` |
 
 **3. Format rules the loaders follow**
 
@@ -570,20 +550,15 @@ To get the data:
 | Delimiter | CSV uses comma `,`; first row is the header. |
 | Excel | Only `.xlsx` is supported (read with `openpyxl`). Summary sheets (`Summary`, `Category_Summary`) are skipped. |
 | Versioned sheets | SRC02 and SRC07 have `v1` / `v2` sheets. Both are loaded into the same raw table with a `_sheet_name` column; staging decides which version is used. |
-| Data types in Raw | **Every column is loaded as `TEXT`** – nothing is cast in Layer 1. This keeps values such as `phone` and `tax_code` exactly as delivered; casting and cleaning happen in dbt staging. |
-| Dates | Single format in the source (`YYYY-MM-DD`); parsed in staging. |
-| Currency | Amounts are in **VND**, no decimals. |
-| Column names | Converted to `snake_case` on load. |
+| Data types in Raw | **Every source column is loaded as `TEXT`** – nothing is cast in Layer 1. This keeps values such as `phone` and `tax_code` exactly as delivered; casting and cleaning happen in dbt staging. |
+| Empty cells | Stored as `NULL`. Text such as `NA` or `null` stays text. |
+| Dates | Single format in the source (`YYYY-MM-DD`, checked by `sql/profiling/data_period.sql`); parsed in staging. |
+| Currency | Amounts are in **VND**. Some SRC01 amounts are written as `908000.0` in the file and stay that way in raw. |
+| Column names | Kept as in the source (already English `snake_case`); only surrounding spaces are trimmed. |
 
 **4. Metadata columns added to every raw table**
 
-| Column | Type | Description |
-|---|---|---|
-| `_batch_id` | UUID | Same ID for all files in one run; joins to `raw.ingest_log.batch_id` |
-| `_source_file` | TEXT | Original file name |
-| `_sheet_name` | TEXT | Excel sheet (NULL for CSV) |
-| `_row_number` | INTEGER | Row position in the source file, for tracing issues back |
-| `_loaded_at` | TIMESTAMPTZ | Load timestamp |
+See section III.A, *Raw Data Ingestion and Metadata*.
 
 **5. Known data issues**
 
@@ -606,14 +581,12 @@ The Bronze layer loads the 10 source files into PostgreSQL **as delivered**, wit
 
 #### Source Connection and File Parsing
 
-**Connection.** Database credentials are read from `.env`, which is never committed (see `.env.example`). Postgres runs in Docker with the port mapped as `5433:5432` (host:container):
+**Connection.** Database credentials are read from `.env`, which is never committed (see `.env.example`). Postgres runs in Docker with the host port from `POSTGRES_PORT` (default `5433`) mapped to `5432` in the container:
 
     docker compose up -d postgres
     docker compose port postgres 5432      # -> 0.0.0.0:5433
 
-`init_db.sql` is mounted into `/docker-entrypoint-initdb.d/` and runs automatically the first time the container starts on an empty volume. It creates the schemas `raw`, `staging`, `dwh` and `snapshots`, plus the table `raw.ingest_log`. To apply changes to an existing database, run it manually (every statement uses `IF NOT EXISTS`, so this is safe):
-
-    psql -h 127.0.0.1 -p 5433 -U $POSTGRES_USER -d $POSTGRES_DB -f init_db.sql
+`init_db.sql` is mounted into `/docker-entrypoint-initdb.d/` and runs automatically the first time the container starts on an empty volume. It creates the schemas `raw`, `staging`, `dwh` and `snapshots`, plus the table `raw.ingest_log`. The loader runs the same file at the start of every load (`ensure_log_table` in `loader.py`), so an existing database picks up new schemas or tables without a manual step.
 
 On Windows, use `127.0.0.1` instead of `localhost`. Otherwise `localhost` resolves to IPv6 `::1`, and Docker Desktop may drop the connection.
 
@@ -621,6 +594,7 @@ On Windows, use `127.0.0.1` instead of `localhost`. Otherwise `localhost` resolv
 
 **Parsing rules** (`loaders/reader.py`):
 - **Every column is read as text** (`dtype=str`, `keep_default_na=False`). This stops pandas from changing data on read, for example turning `tax_code` into a float or dropping leading zeros. Type casting is left to Silver on purpose.
+- **Empty cells become `NULL`**, so Silver can use `not_null` tests directly. Text such as `NA` or `null` is not treated as missing and stays text.
 - **CSV**: encoding `utf-8-sig` (UTF-8, BOM-safe for Vietnamese text), comma-delimited, header on row 1.
 - **XLSX**: only the sheets listed in the registry are loaded. Summary sheets are skipped (`Summary` in SRC02, `Category_Summary` in SRC04).
 - **Multi-version sheets are unioned into one table per entity**, and `_sheet_name` records the version:
@@ -628,7 +602,7 @@ On Windows, use `127.0.0.1` instead of `localhost`. Otherwise `localhost` resolv
   - SRC07: employee v1 and v2 go into `src07_employee_master`, and `Change_Log` goes into its own table.
 
   This keeps the history that Silver needs for target versioning and SCD2, and a version can be filtered with a `WHERE` clause.
-- **Light tidy-up only**, with no cell values changed. Spaces around column names are trimmed. Rows where every cell is empty are dropped. Columns with no header (`Unnamed: n`) are dropped if they are completely empty. Column names are otherwise kept as in the source.
+- **Light tidy-up only**, with no cell values changed. Spaces around column names are trimmed. Rows where every cell is empty are dropped (the count is logged). Columns with no header (`Unnamed: n`) are dropped if they are completely empty. Column names are otherwise kept as in the source.
 
 | Source | Format | Sheets loaded | Raw table | Rows |
 |---|---|---|---|---|
@@ -648,15 +622,18 @@ On Windows, use `127.0.0.1` instead of `localhost`. Otherwise `localhost` resolv
 
 **One transaction per source file.** Every target table of the file is truncated and reloaded, and the `success` rows are written to `raw.ingest_log`, all in one transaction. If any step fails, nothing from that file is committed, so a failed load never leaves a half-written or mixed-version table. Tables are truncated rather than dropped, so dbt views built on `raw.*` keep working.
 
-**Failures are isolated.** If one source fails, it is logged as `failed` in a separate transaction and the run continues with the remaining sources. `run_all.py` exits with code 1 if any source failed, so Airflow or CI can mark the run as failed.
+**Failures are isolated.** If one source fails, it is logged as `failed` (with the file hash, if it was computed) in a separate transaction and the run continues with the remaining sources. `run_all.py` exits with code 1 if any source failed, so Airflow or CI can mark the run as failed.
 
-The loader appends these metadata columns to every row:
+**Schema changes fail loudly.** If a file gains or loses a column, or the loader adds a metadata column, the load stops with a message naming the new and missing columns. Drop that raw table (and any views on it), then rerun with `--force`.
+
+The loader adds these metadata columns to every row:
 
 | Column | Type | Purpose |
 |---|---|---|
+| `_row_number` | BIGINT | Row in the source file or sheet (header = row 1, so the first data row is 2). Traces a failing row back to the file |
 | `_batch_id` | TEXT | 12-character run id. Groups everything loaded in one run and joins to `raw.ingest_log.batch_id` |
 | `_source_file` | TEXT | Original file name, e.g. `SRC01_sales_transactions.csv` |
-| `_sheet_name` | TEXT | Excel sheet the row came from (empty string for CSV); also the version key for SRC02/SRC07 |
+| `_sheet_name` | TEXT | Excel sheet the row came from (`NULL` for CSV); also the version key for SRC02/SRC07 |
 | `_file_hash` | TEXT | SHA-256 of the source file |
 | `_loaded_at` | TIMESTAMPTZ | Load timestamp (UTC) |
 
@@ -681,7 +658,7 @@ The skip is based on the file content only. After changing loader code or `confi
 | `source_id` | TEXT | `SRC01` … `SRC10` |
 | `file_name` | TEXT | Source file name |
 | `file_hash` | TEXT | SHA-256 of the file |
-| `sheet` | TEXT | Sheet name (NULL for CSV and for skipped/failed files) |
+| `sheet` | TEXT | Sheet name (`NULL` for CSV and for skipped/failed files) |
 | `target_table` | TEXT | e.g. `raw.src07_employee_master` |
 | `row_count` | INT | Rows read from the file and loaded |
 | `status` | TEXT | `success` / `skipped` (unchanged hash) / `failed` |
@@ -698,7 +675,9 @@ Example: check the latest run
 
 **Bronze is done when** a single command loads all 10 sources into 11 raw tables. Each `row_count` must match the table above, and a second run must report every source as `skipped`.
 
-### B. Bronze Data Profiling
+### B. Source Profiling (findings → silver tests)
+
+Before building Silver, every source file was profiled in [`notebooks/00_source_exploration.ipynb`](notebooks/00_source_exploration.ipynb): row counts, data types, null rates, candidate keys and an automatic foreign-key scan across all files. The findings are listed in [`docs/data_issues.md`](docs/data_issues.md), each with its count, the notebook cell it comes from, how Silver will handle it and the dbt test that will guard it. Grain, foreign keys and the data period are proven with SQL scripts in [`sql/profiling/`](sql/profiling/), run against the raw tables: SRC01 and SRC05 are unique on `order_id` + `product_id`, every return matches a sales line, and `dim_date` must reach 2025-01-02. Others are still `TBD`, mainly the resign-date, off-territory and derived-column checks, and will get their own scripts. Each finding then becomes a dbt test in the Silver layer, so the checks run on every build instead of only once in a notebook.
 
 ### C. Silver Layer
 #### Cleaning and Standardisation
