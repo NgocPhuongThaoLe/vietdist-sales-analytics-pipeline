@@ -26,14 +26,14 @@ clean-targets:         # directories to be removed by `dbt clean`
 # Configuring models
 # Full documentation: https://docs.getdbt.com/docs/configuring-models
 
-# In this example config, we tell dbt to build all models in the example/
-# directory as views. These settings can be overridden in the individual model
-# files using the `{{ config(...) }}` macro.
+# Folder -> schema (exact names, see macros/generate_schema_name.sql):
+#   models/staging/  -> schema staging, views  (Silver)
+#   models/dwh/      -> schema dwh, tables     (Gold: dims/, facts/, bridges/, marts/)
 models:
   vietdist_dbt:
     staging:
       +schema: staging
       +materialized: view
-    marts:
+    dwh:
       +schema: dwh
       +materialized: table

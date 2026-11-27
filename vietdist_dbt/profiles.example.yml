@@ -1,0 +1,19 @@
+# Template for ~/.dbt/profiles.yml. No secrets: every value comes from .env.
+# Copy it once:
+#   Windows:      mkdir $HOME\.dbt -Force; copy vietdist_dbt\profiles.example.yml $HOME\.dbt\profiles.yml
+#   macOS/Linux:  mkdir -p ~/.dbt && cp vietdist_dbt/profiles.example.yml ~/.dbt/profiles.yml
+# Then load .env into the shell before running dbt:
+#   . .\scripts\load_env.ps1      (Windows PowerShell)
+#   source scripts/load_env.sh    (macOS/Linux)
+vietdist_dbt:
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST', '127.0.0.1') }}"
+      port: "{{ env_var('POSTGRES_PORT', '5433') | as_number }}"
+      dbname: "{{ env_var('POSTGRES_DB', 'vietdist') }}"
+      user: "{{ env_var('POSTGRES_USER') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD') }}"
+      schema: staging            # default schema; dwh models override it in dbt_project.yml
+      threads: "{{ env_var('DBT_THREADS', '4') | as_number }}"
