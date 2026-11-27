@@ -14,32 +14,13 @@ import pandas as pd
 from sqlalchemy import URL, create_engine, inspect, text
 from sqlalchemy.engine import Connection, Engine
 
-from config import DB, META_COLS, SCHEMA_RAW
+from config import DB, INIT_DB_SQL, META_COLS, SCHEMA_RAW
 from reader import read_source
 
 logger = logging.getLogger(__name__)
 
 RAW_SCHEMA = SCHEMA_RAW
 CHUNK_SIZE = 50_000  # rows per COPY batch
-
-# Schema + log table. Safe to run many times (IF NOT EXISTS).
-LOG_DDL = f"""
-CREATE SCHEMA IF NOT EXISTS {RAW_SCHEMA};
-CREATE TABLE IF NOT EXISTS {RAW_SCHEMA}.ingest_log (
-    log_id        BIGSERIAL PRIMARY KEY,
-    batch_id      TEXT        NOT NULL,
-    source_id     TEXT        NOT NULL,
-    file_name     TEXT        NOT NULL,
-    file_hash     TEXT,
-    sheet         TEXT,
-    target_table  TEXT,
-    row_count     INTEGER,
-    status        TEXT        NOT NULL,  -- success | skipped | failed
-    error         TEXT,
-    started_at    TIMESTAMPTZ NOT NULL,
-    finished_at   TIMESTAMPTZ
-);
-"""
 
 
 # Connection
@@ -62,13 +43,16 @@ def get_engine() -> Engine:
 
 
 def ensure_log_table(engine: Engine) -> None:
+    # init_db.sql is the single definition of the schemas and raw.ingest_log.
+    # Docker runs it only on an empty volume; running it here as well is safe
+    # (every statement uses IF NOT EXISTS) and covers an existing database.
     with engine.begin() as conn:
-        conn.execute(text(LOG_DDL))
+        conn.exec_driver_sql(INIT_DB_SQL.read_text(encoding="utf-8"))
 
 
 # Main Function
 # Load ONE source (all its sheets) into raw.*, and write ingest_log.
-# Never raises: errors are logged as "failed" so run_all can continue.
+# Errors are logged as "failed" so run_all can continue with the next source.
 def load_source(engine: Engine, cfg: dict, data_dir: Path,
                 batch_id: str, force: bool = False) -> list[dict]:
     sid = cfg["source_id"]
@@ -76,6 +60,7 @@ def load_source(engine: Engine, cfg: dict, data_dir: Path,
     started = _now()
     base_log = {"batch_id": batch_id, "source_id": sid,
                 "file_name": path.name, "started_at": started}
+    file_hash = None
 
     try:
         file_hash = file_sha256(path)
@@ -84,7 +69,8 @@ def load_source(engine: Engine, cfg: dict, data_dir: Path,
         if not force and already_loaded(engine, sid, file_hash):
             logger.info("%s: file unchanged (hash %s...) -> skipped", sid, file_hash[:8])
             with engine.begin() as conn:
-                _write_log(conn, **base_log, file_hash=file_hash, status="skipped")
+                _write_log(conn, **base_log, file_hash=file_hash, status="skipped",
+                           finished_at=_now())
             return [{"source_id": sid, "sheet": None, "table": None,
                      "rows": 0, "status": "skipped"}]
 
@@ -104,8 +90,8 @@ def load_source(engine: Engine, cfg: dict, data_dir: Path,
         # One transaction per file: all sheets load, or none do
         with engine.begin() as conn:
             for table, dfs in by_table.items():
-                # concat aligns columns; a column missing in one version -> ""
-                write_table(conn, pd.concat(dfs, ignore_index=True).fillna(""), table)
+                # concat aligns columns; a column missing in one version -> NULL
+                write_table(conn, pd.concat(dfs, ignore_index=True), table)
             for r in results:
                 _write_log(conn, **base_log, file_hash=file_hash, sheet=r["sheet"],
                            target_table=f"{RAW_SCHEMA}.{r['table']}", row_count=r["rows"],
@@ -114,9 +100,13 @@ def load_source(engine: Engine, cfg: dict, data_dir: Path,
 
     except Exception as e:
         logger.exception("%s: load failed", sid)
-        with engine.begin() as conn:
-            _write_log(conn, **base_log, status="failed",
-                       error=str(e)[:2000], finished_at=_now())
+        try:
+            with engine.begin() as conn:
+                _write_log(conn, **base_log, file_hash=file_hash, status="failed",
+                           error=str(e)[:2000], finished_at=_now())
+        except Exception:
+            # e.g. the database itself is down: still report, do not crash the run
+            logger.exception("%s: could not write the failed row to ingest_log", sid)
         return [{"source_id": sid, "sheet": None, "table": None,
                  "rows": 0, "status": "failed", "error": str(e)}]
 
@@ -160,9 +150,10 @@ def table_name(source_id: str, sheet: str | None) -> str:
 
 def add_metadata(df: pd.DataFrame, path: Path, sheet: str | None,
                  file_hash: str, batch_id: str, loaded_at: datetime) -> pd.DataFrame:
+    # _row_number is already set by the reader
     df = df.copy()
     df[META_COLS["source_file"]] = path.name
-    df[META_COLS["sheet_name"]] = sheet or ""
+    df[META_COLS["sheet_name"]] = sheet  # None -> NULL for CSV
     df[META_COLS["file_hash"]] = file_hash
     df[META_COLS["batch_id"]] = batch_id
     df[META_COLS["loaded_at"]] = loaded_at
@@ -171,7 +162,16 @@ def add_metadata(df: pd.DataFrame, path: Path, sheet: str | None,
 
 def write_table(conn: Connection, df: pd.DataFrame, table: str) -> None:
     # Full refresh. TRUNCATE (not DROP) so dbt views built on raw.* keep working.
-    if inspect(conn).has_table(table, schema=RAW_SCHEMA):
+    insp = inspect(conn)
+    if insp.has_table(table, schema=RAW_SCHEMA):
+        existing = [c["name"] for c in insp.get_columns(table, schema=RAW_SCHEMA)]
+        if set(existing) != set(df.columns):
+            raise RuntimeError(
+                f"{RAW_SCHEMA}.{table}: columns changed "
+                f"(new: {sorted(set(df.columns) - set(existing))}, "
+                f"gone: {sorted(set(existing) - set(df.columns))}). "
+                f"Drop the table (and any views on it), then rerun with --force."
+            )
         conn.execute(text(f'TRUNCATE TABLE {RAW_SCHEMA}."{table}"'))
     # COPY instead of INSERT: ~50-100x faster for 100k+ rows
     df.to_sql(table, conn, schema=RAW_SCHEMA, if_exists="append",
@@ -182,8 +182,9 @@ def _copy_insert(table, conn, keys, data_iter) -> None:
     # pandas calls this once per chunk. Uses Postgres COPY ... FROM STDIN.
     # Runs on the same connection -> stays inside the one-transaction-per-file.
     buf = io.StringIO()
-    # QUOTE_ALL: "" stays an empty string (unquoted empty would become NULL)
-    csv.writer(buf, quoting=csv.QUOTE_ALL).writerows(data_iter)
+    # QUOTE_NOTNULL: values are quoted, None is written unquoted.
+    # In COPY csv, an unquoted empty field is NULL and "" is an empty string.
+    csv.writer(buf, quoting=csv.QUOTE_NOTNULL).writerows(data_iter)
     buf.seek(0)
     cols = ", ".join(f'"{k}"' for k in keys)
     sql = f'COPY {table.schema}."{table.name}" ({cols}) FROM STDIN WITH (FORMAT csv)'

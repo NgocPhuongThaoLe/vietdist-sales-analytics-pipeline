@@ -24,13 +24,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--force", action="store_true",
                         help="reload even if the same file was already loaded")
     args = parser.parse_args(argv)
+    # .env is already loaded by config.py (project root, any working directory)
 
-    # Read DATABASE_URL from .env (if python-dotenv is installed)
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
+    # Vietnamese text in logs/errors must not crash the run when stdout is a
+    # pipe with a non-UTF-8 code page (Windows, Airflow, CI)
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
 
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")

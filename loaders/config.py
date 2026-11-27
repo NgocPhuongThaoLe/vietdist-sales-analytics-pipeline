@@ -9,10 +9,12 @@ from dotenv import load_dotenv
 
 # Paths
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DATA_RAW_DIR = PROJECT_ROOT / "data" / "raw"
-LOG_DIR = PROJECT_ROOT / "logs"
-
 load_dotenv(PROJECT_ROOT / ".env")
+
+# RAW_DATA_DIR in .env may be relative to the project root
+DATA_RAW_DIR = (PROJECT_ROOT / os.getenv("RAW_DATA_DIR", "data/raw")).resolve()
+LOG_DIR = PROJECT_ROOT / "logs"
+INIT_DB_SQL = PROJECT_ROOT / "docker" / "postgres" / "init_db.sql"
 
 # Database connection
 DB = {
@@ -35,12 +37,14 @@ SCHEMA_DWH = "dwh"
 # Raw-layer conventions
 READ_AS_TEXT = True         # leading zeros, no float conversion; cast in dbt staging
 CSV_ENCODING = "utf-8-sig"  # Vietnamese text, BOM
+# Empty cells are stored as NULL. Text such as "NA" or "null" is kept as text.
 
 
 # Metadata columns
 META_COLS = {
+    "row_number": "_row_number",  # row in the source file/sheet (header = row 1)
     "source_file": "_source_file",
-    "sheet_name": "_sheet_name",
+    "sheet_name": "_sheet_name",  # NULL for CSV
     "loaded_at": "_loaded_at",
     "batch_id": "_batch_id",
     "file_hash": "_file_hash",

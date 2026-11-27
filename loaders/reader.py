@@ -3,18 +3,19 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 import pandas as pd
-from config import CSV_ENCODING, READ_AS_TEXT
+from config import CSV_ENCODING, META_COLS, READ_AS_TEXT
 logger = logging.getLogger(__name__)
 
 # Shared settings
-# Read options shared by CSV and Excel
+# Read options shared by CSV and Excel.
+# keep_default_na=False: text such as "NA" or "null" stays text. Only truly
+# empty cells become NULL (see _tidy).
 _READ_OPTS = {
     "dtype": str if READ_AS_TEXT else None,
     "keep_default_na": False,
 }
 
-MONTH_COLS = [f"T{i}" for i in range(1, 13)]
-TOTAL_WORDS = {"total", "tổng", "tổng cộng", "grand total"}
+ROW_NUMBER = META_COLS["row_number"]
 
 
 # Main Function
@@ -24,7 +25,7 @@ def read_source(path, cfg):
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"{cfg['source_id']}: file not found -> {path}")
-    
+
     fmt = cfg["format"].lower()
     if fmt == "csv":
         frames = _read_csv(path)
@@ -32,18 +33,14 @@ def read_source(path, cfg):
         frames = _read_xlsx(path, cfg["sheets"])
     else:
         raise ValueError(f"{cfg['source_id']}: unsupported format '{cfg['format']}'")
-    
-    frames = {sheet: _tidy(df) for sheet, df in frames.items()}
 
-    # SRC02 only
-    if cfg["source_id"] == "SRC02":
-        frames = {sheet: _melt_target(df, sheet) for sheet, df in frames.items()}
+    frames = {sheet: _tidy(df, cfg["source_id"], sheet) for sheet, df in frames.items()}
 
     # Log the number of rows and columns of each table, for checking
     for sheet, df in frames.items():
         logger.info("%s %-12s rows=%d cols=%d",
                     cfg["source_id"], sheet or "-", len(df), df.shape[1])
-    
+
     return frames
 
 # Read a CSV file
@@ -56,7 +53,7 @@ def _read_csv(path: Path) -> dict[None, pd.DataFrame]:
 def _read_xlsx(path: Path, sheets: dict[str, str]) -> dict[str, pd.DataFrame]:
 
     with pd.ExcelFile(path, engine="openpyxl") as xls:
-        
+
         available = set(xls.sheet_names)
         wanted = list(sheets)
 
@@ -76,66 +73,33 @@ def _read_xlsx(path: Path, sheets: dict[str, str]) -> dict[str, pd.DataFrame]:
 
 # Helpers
 # Light clean-up that does NOT change any cell values
-def _tidy(df: pd.DataFrame) -> pd.DataFrame:
+def _tidy(df: pd.DataFrame, source_id: str, sheet: str | None) -> pd.DataFrame:
     # Make a copy -> original table is not changed
     df = df.copy()
     # Remove extra spaces around column names ("customer_id " -> "customer_id")
     df.columns = [str(c).strip() for c in df.columns]
-    # Any leftover empty values (NaN) -> empty text ""
-    df = df.fillna("")
+    # Empty cells -> NULL. CSV gives "" for an empty field, Excel gives NaN.
+    df = df.mask(df.eq(""))
+    # Row position in the source, header = row 1, so the first data row = 2.
+    # Set before dropping empty rows, so the numbers still match the file.
+    df.insert(0, ROW_NUMBER, range(2, len(df) + 2))
+
     # Remove rows where every cell is empty
-    df = df.loc[~(df == "").all(axis=1)]
+    data_cols = [c for c in df.columns if c != ROW_NUMBER]
+    empty_rows = df[data_cols].isna().all(axis=1)
+    if empty_rows.any():
+        logger.info("%s %s: dropped %d empty row(s)",
+                    source_id, sheet or "-", int(empty_rows.sum()))
+    df = df.loc[~empty_rows]
 
     # Find columns named "Unnamed: ..." (no header) that are completely empty
-    empty_unnamed = [c for c in df.columns
-                     if c.startswith("Unnamed:") and (df[c] == "").all()]
+    empty_unnamed = [c for c in data_cols
+                     if c.startswith("Unnamed:") and df[c].isna().all()]
     # Remove those columns
     df = df.drop(columns=empty_unnamed)
 
     # Renumber the rows from 0 and return the table
     return df.reset_index(drop=True)
-
-
-# Reshape the SRC02 target table: wide (one column per month) -> long (one row per month)
-def _melt_target(df: pd.DataFrame, sheet: str | None) -> pd.DataFrame:
-    # Lookup: column name in UPPER case -> original name (so "t1" also matches "T1")
-    col_by_upper = {c.upper(): c for c in df.columns}
-    # Keep only the month columns that really exist in the table
-    month_cols = [col_by_upper[m] for m in MONTH_COLS if m in col_by_upper]
-    # No month columns -> the table is already long, return it unchanged
-    if not month_cols:
-        logger.info("SRC02 %s: no T1..T12 columns -> already long, no melt", sheet)
-        return df
-
-    # Info columns (employee id, name...): not a month column, not a "Total" column
-    id_cols = [c for c in df.columns
-               if c not in month_cols and c.strip().lower() not in TOTAL_WORDS]
-
-    # Mark rows that have "Tổng"/"Total" in any info column
-    is_total_label = (
-        df[id_cols].apply(lambda s: s.str.strip().str.lower().isin(TOTAL_WORDS)).any(axis=1)
-    )
-    # Mark rows where all info columns are empty (usually also a total row)
-    has_no_id = (df[id_cols] == "").all(axis=1)
-    # Count the total rows to remove (for the log)
-    n_total = int((is_total_label | has_no_id).sum())
-    # Remove the total rows
-    df = df.loc[~(is_total_label | has_no_id)]
-
-    # Reshape: each (employee x month) becomes one row
-    #   column "month" holds the month name, column "target_amount" holds the target
-    long = df.melt(id_vars=id_cols, value_vars=month_cols,
-                   var_name="month", value_name="target_amount")
-    # Remove the leading "T" from the month name: "T7" -> "7"
-    long["month"] = long["month"].str.upper().str.removeprefix("T")
-    # Remove rows with no target (v2 only has months 7-12, the rest are empty)
-    long = long.loc[long["target_amount"].str.strip() != ""]
-
-    # Log: how many months, how many total rows removed, how many rows left
-    logger.info("SRC02 %s: melted %d months, dropped %d total row(s) -> %d rows",
-                sheet, len(month_cols), n_total, len(long))
-    # Renumber the rows and return the table
-    return long.reset_index(drop=True)
 
 
 # Test Run
@@ -177,17 +141,18 @@ if __name__ == "__main__":
         frames = read_source(DATA_RAW_DIR / cfg["file"], cfg)
         # Loop over every table (sheet) that was read
         for sheet, df in frames.items():
-            # Key to look up the expected row count, e.g. ("SRC02", "v1")
+            # Key to look up the expected row count, e.g. ("SRC02", "Plan_v1_Original")
             key = (cfg["source_id"], sheet)
+            data_cols = [c for c in df.columns if c != ROW_NUMBER]
 
             # Check 1: find columns that are NOT text (they should all be text)
-            not_text = [c for c in df.columns
+            not_text = [c for c in data_cols
                         if not pd.api.types.is_string_dtype(df[c])]
             # Check 2: find columns with values like "912345678.0" (sign it was read as a float)
             #   only for ID-like columns (customer_id, tax_code, phone...)
-            float_like = [c for c in df.columns
+            float_like = [c for c in data_cols
                           if any(w in c.lower() for w in ID_LIKE)
-                          and df[c].str.fullmatch(r"\d+\.0").any()]
+                          and df[c].str.fullmatch(r"\d+\.0", na=False).any()]
             # Check 3: does the row count match the expected count?
             #   no expected value (e.g. sheet renamed in config) -> CHECK, not silently OK
             exp = EXPECTED.get(key)
