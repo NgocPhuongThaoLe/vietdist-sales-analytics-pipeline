@@ -416,3 +416,410 @@ models:
         description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
       - name: _loaded_at
         description: "Lineage: load timestamp (UTC)."
+
+  - name: stg_sales_transactions
+    description: "One row per sales order line from SRC01, typed, with the post-resign flag. PK order_id + product_id; 119,101 rows; net 158,957,563,200 VND."
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['order_id', 'product_id']
+      - row_count_equals:
+          arguments:
+            expected: 119101
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "abs(gross_amount - quantity * unit_price) <= 1"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "abs(discount_amount - gross_amount * discount_pct / 100) <= 50"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "abs(net_amount - (gross_amount - discount_amount)) <= 1"
+    columns:
+      - name: order_id
+        description: "Sales order code (e.g. ORD0010001); with product_id the primary key."
+        data_tests:
+          - not_null
+      - name: product_id
+        description: "Product sold on this line; references stg_products."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_products')
+                field: product_id
+      - name: order_date
+        description: "Order date (2024-01-01 to 2024-12-31)."
+        data_tests:
+          - not_null
+      - name: customer_id
+        description: "Customer of the order; references stg_customers."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+      - name: employee_id
+        description: "Sales rep on the order; references stg_employees."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_id
+      - name: channel
+        description: "Sales channel of the order (order-level, DQ15)."
+      - name: province
+        description: "Province of the order (order-level, DQ15), Vietnamese value."
+      - name: quantity
+        description: "Units sold on the line."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+      - name: unit_price
+        description: "Price per unit in VND, numeric(18,2)."
+      - name: discount_pct
+        description: "Discount as a whole percent (2 = 2 %), numeric(5,2) (DQ14)."
+      - name: gross_amount
+        description: "Stored gross amount in VND (= quantity * unit_price)."
+      - name: discount_amount
+        description: "Stored discount in VND, rounded to 100 VND by the source (DQ14)."
+      - name: net_amount
+        description: "Stored net amount in VND (= gross_amount - discount_amount); reconciles to raw."
+      - name: delivery_status
+        description: "Delivery status of the line (line-level, DQ15): Delivered, Delivering or Cancelled."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Delivered', 'Delivering', 'Cancelled']
+      - name: payment_method
+        description: "Payment method of the line (line-level, DQ15), Vietnamese value."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Chuyển khoản', 'Công nợ', 'Tiền mặt']
+      - name: payment_status
+        description: "Payment status of the line (line-level, DQ15): Paid, Partial or Unpaid."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Paid', 'Partial', 'Unpaid']
+      - name: is_post_resign_sale
+        description: "True when order_date > the employee's resign_date (A-DQ08); 547 lines."
+        data_tests:
+          - not_null
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _row_number
+        description: "Lineage: row in the source file (header = 1)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
+
+  - name: stg_distributor_orders
+    description: "One row per distributor order line from SRC05 (sheet Orders), typed. PK order_id + product_id; 35,945 rows, 8,000 orders."
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['order_id', 'product_id']
+      - row_count_equals:
+          arguments:
+            expected: 35945
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "qty_delivered <= qty_ordered"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "actual_delivery_date >= order_date"
+          config:
+            where: "actual_delivery_date is not null"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "expected_delivery_date >= order_date"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "abs(fill_rate_pct - qty_delivered::numeric / qty_ordered * 100) <= 0.01"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "abs(gross_amount - qty_ordered * distributor_price) <= 1"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "abs(delivered_amount - qty_delivered * distributor_price) <= 1"
+    columns:
+      - name: order_id
+        description: "Distributor order code (e.g. DORD0020001); with product_id the primary key."
+        data_tests:
+          - not_null
+      - name: product_id
+        description: "Product ordered on this line; references stg_products."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_products')
+                field: product_id
+      - name: distributor_id
+        description: "Ordering distributor; references stg_distributors."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_distributors')
+                field: distributor_id
+      - name: order_date
+        description: "Order date (2024)."
+        data_tests:
+          - not_null
+      - name: expected_delivery_date
+        description: "Promised delivery date; reaches 2025-01-02 (DQ19)."
+        data_tests:
+          - not_null
+      - name: actual_delivery_date
+        description: "Actual delivery date; filled on every line, also on Cancelled lines."
+      - name: channel
+        description: "Sales channel of the distributor order."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['E-commerce', 'Modern Trade', 'Traditional Trade']
+      - name: qty_ordered
+        description: "Units ordered."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+      - name: qty_delivered
+        description: "Units delivered; never above qty_ordered."
+        data_tests:
+          - not_null
+      - name: unit_price_list
+        description: "List price per unit in VND, numeric(18,2)."
+      - name: distributor_price
+        description: "Price per unit charged to the distributor in VND, numeric(18,2)."
+      - name: fill_rate_pct
+        description: "Stored fill rate in percent = qty_delivered / qty_ordered * 100, numeric(5,2) (DQ20)."
+      - name: gross_amount
+        description: "Stored ordered value in VND = qty_ordered * distributor_price (DQ20)."
+      - name: delivered_amount
+        description: "Stored delivered value in VND = qty_delivered * distributor_price (DQ20)."
+      - name: ontime_delivery
+        description: "Stored on-time flag, Yes or No; differs from the dates on 177 lines (DQ20)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Yes', 'No']
+      - name: delivery_status
+        description: "Delivery status of the line: Delivered, Partial or Cancelled."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Delivered', 'Partial', 'Cancelled']
+      - name: payment_terms
+        description: "Payment terms: COD, NET15, NET30 or NET45."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['COD', 'NET15', 'NET30', 'NET45']
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _sheet_name
+        description: "Lineage: Excel sheet the row came from (Orders)."
+      - name: _row_number
+        description: "Lineage: row in the source sheet (header = 1)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
+
+  - name: stg_returns
+    description: "One row per returned sales line from SRC09, typed and linked to stg_sales_transactions. PK return_id; 3,665 rows."
+    data_tests:
+      - row_count_equals:
+          arguments:
+            expected: 3665
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "abs(return_amount - return_quantity * unit_price) <= 1"
+    columns:
+      - name: return_id
+        description: "Return code (e.g. RET000001); primary key."
+        data_tests:
+          - unique
+          - not_null
+      - name: original_order_id
+        description: "Sales order the return belongs to; with product_id points to one stg_sales_transactions line (DQ07)."
+        data_tests:
+          - not_null
+      - name: product_id
+        description: "Returned product; references stg_products."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_products')
+                field: product_id
+      - name: customer_id
+        description: "Customer who returned the goods; references stg_customers and equals the sales line's customer."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+      - name: employee_id
+        description: "Sales rep of the original sale; references stg_employees and equals the sales line's rep."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_id
+      - name: return_date
+        description: "Date of the return; never before the order date."
+        data_tests:
+          - not_null
+      - name: return_quantity
+        description: "Units returned; never above the units sold (DQ07)."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+      - name: unit_price
+        description: "Price per unit in VND, numeric(18,2)."
+      - name: return_amount
+        description: "Returned value in VND = return_quantity * unit_price, numeric(18,2)."
+      - name: return_reason
+        description: "Reason for the return, Vietnamese value (e.g. Hàng lỗi = defective goods)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Hàng hết hạn', 'Hàng lỗi', 'Hàng vỡ vận chuyển', 'Khách từ chối nhận', 'Không đúng đơn hàng', 'Sai sản phẩm']
+      - name: status
+        description: "Processing status of the return, Vietnamese value (Đã xử lý, Đang xử lý, Từ chối)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Đã xử lý', 'Đang xử lý', 'Từ chối']
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _row_number
+        description: "Lineage: row in the source file (header = 1)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
+
+  - name: stg_promotions
+    description: "One row per promotion from SRC10, typed; the product list moves to stg_promotion_products. PK promotion_id; 40 rows."
+    data_tests:
+      - row_count_equals:
+          arguments:
+            expected: 40
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "end_date >= start_date"
+    columns:
+      - name: promotion_id
+        description: "Promotion code (e.g. PROMO001); primary key."
+        data_tests:
+          - unique
+          - not_null
+      - name: promotion_name
+        description: "Internal promotion name (e.g. CT_XUAN_2024_02)."
+      - name: promotion_type
+        description: "Type of promotion, Vietnamese value (e.g. Giảm giá trực tiếp = direct discount)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Chiết khấu theo sản lượng', 'Combo khuyến mãi', 'Giảm giá trực tiếp', 'Tặng hàng kèm', 'Tích điểm đổi quà']
+      - name: target_channel
+        description: "Channel the promotion targets; All = every channel."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['All', 'E-commerce', 'Modern Trade', 'Traditional Trade']
+      - name: target_region
+        description: "Region the promotion targets; All = every region."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['All', 'Miền Bắc', 'Miền Nam', 'Miền Trung']
+      - name: start_date
+        description: "First day of the promotion."
+        data_tests:
+          - not_null
+      - name: end_date
+        description: "Last day of the promotion; never before start_date."
+        data_tests:
+          - not_null
+      - name: discount_pct
+        description: "Discount as a whole percent (8 = 8 %), numeric(5,2)."
+      - name: min_order_quantity
+        description: "Minimum order quantity to qualify (0 = no minimum)."
+      - name: budget_vnd
+        description: "Planned budget in VND, numeric(18,2)."
+      - name: actual_cost_vnd
+        description: "Actual cost in VND, numeric(18,2); above budget for 6 promotions (BR5 input)."
+      - name: status
+        description: "Promotion status: Active, Completed or Planned."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Active', 'Completed', 'Planned']
+      - name: created_by
+        description: "Name of the person who created the promotion (free text, not an employee id)."
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _sheet_name
+        description: "Lineage: Excel sheet the row came from (Sheet1)."
+      - name: _row_number
+        description: "Lineage: row in the source sheet (header = 1)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
+
+  - name: stg_promotion_products
+    description: "One row per promotion x product, split from SRC10 applicable_products (DQ17). 145 rows."
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['promotion_id', 'product_id']
+      - row_count_equals:
+          arguments:
+            expected: 145
+    columns:
+      - name: promotion_id
+        description: "Promotion code; references stg_promotions."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_promotions')
+                field: promotion_id
+      - name: product_id
+        description: "Product covered by the promotion; references stg_products."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_products')
+                field: product_id
+      - name: position_in_list
+        description: "Position of the product in the original applicable_products list (1 = first)."
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _sheet_name
+        description: "Lineage: Excel sheet the row came from (Sheet1)."
+      - name: _row_number
+        description: "Lineage: row of the promotion in the source sheet (shared by its products)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
