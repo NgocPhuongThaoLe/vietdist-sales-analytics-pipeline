@@ -823,3 +823,174 @@ models:
         description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
       - name: _loaded_at
         description: "Lineage: load timestamp (UTC)."
+
+  - name: stg_sales_targets
+    description: "One row per SRC02 target row: employee x year x month x plan version (v1 full year, v2 H2 re-plan). 1,950 rows."
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['employee_id', 'year', 'month', 'plan_version']
+      - row_count_equals:
+          arguments:
+            expected: 1950
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "plan_version = source_plan_version"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "month between 7 and 12"
+          config:
+            where: "plan_version = 'v2'"
+    columns:
+      - name: employee_id
+        description: "Employee the target is set for; references stg_employees."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_id
+      - name: plan_version
+        description: "Plan version from the sheet name: v1 (Plan_v1_Original) or v2 (Plan_v2_Adjustment_H2)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['v1', 'v2']
+      - name: source_plan_version
+        description: "Raw plan_version column; must equal plan_version."
+      - name: version_date
+        description: "Date the plan version was issued (v1 2024-01-05, v2 2024-07-03)."
+        data_tests:
+          - not_null
+      - name: effective_from
+        description: "First day the plan version covers (v1 2024-01-01, v2 2024-07-01)."
+      - name: effective_to
+        description: "Last day the plan version covers (2024-12-31 for both)."
+      - name: year
+        description: "Target year (2024)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [2024]
+                quote: false
+      - name: month
+        description: "Target month, 1-12."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "between 1 and 12"
+      - name: target_month
+        description: "First day of the target month (make_date(year, month, 1)); joins to dim_date in Gold."
+        data_tests:
+          - not_null
+      - name: plan_region
+        description: "Region the target was set for; equals the employee's region in the same version."
+      - name: plan_team
+        description: "Team the target was set for; equals the employee's team in the same version."
+      - name: target_revenue
+        description: "Target revenue in VND, numeric(18,2)."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "> 0"
+      - name: target_quantity
+        description: "Target units sold."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: ">= 0"
+      - name: target_new_customers
+        description: "Target number of new customers."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: ">= 0"
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _sheet_name
+        description: "Lineage: Excel sheet the row came from; also the version key."
+      - name: _row_number
+        description: "Lineage: row in the source sheet (header = 1)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
+
+  - name: stg_sales_targets_versioned
+    description: "stg_sales_targets with version logic (A-DQ18 option a): is_latest, superseded_by_version, valid_from / valid_to. 1,950 rows, 1,284 latest."
+    data_tests:
+      - row_count_equals:
+          arguments:
+            expected: 1950
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['employee_id', 'year', 'month', 'plan_version']
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "valid_to >= valid_from"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "(is_latest and superseded_by_version is null and valid_to = date '9999-12-31') or (not is_latest and superseded_by_version is not null and valid_to < date '9999-12-31')"
+    columns:
+      - name: employee_id
+        description: "Employee the target is set for; references stg_employees."
+        data_tests:
+          - not_null
+      - name: plan_version
+        description: "Plan version of this row: v1 or v2."
+      - name: year
+        description: "Target year (2024)."
+      - name: month
+        description: "Target month, 1-12."
+      - name: target_month
+        description: "First day of the target month; joins to dim_date in Gold."
+      - name: version_date
+        description: "Date the plan version was issued."
+      - name: effective_from
+        description: "First day of the period the plan version covers."
+      - name: effective_to
+        description: "Last day of the period the plan version covers."
+      - name: plan_region
+        description: "Region the target was set for."
+      - name: plan_team
+        description: "Team the target was set for."
+      - name: target_revenue
+        description: "Target revenue in VND, numeric(18,2)."
+      - name: target_quantity
+        description: "Target units sold."
+      - name: target_new_customers
+        description: "Target number of new customers."
+      - name: is_latest
+        description: "True for the row of the latest plan version covering this month (A-DQ18); 1,284 rows."
+        data_tests:
+          - not_null
+      - name: superseded_by_version
+        description: "Version that replaced this row (v2 for v1 rows in months 7-12); NULL for latest rows."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['v2']
+      - name: valid_from
+        description: "Date this version row became the plan of record (= its version_date)."
+        data_tests:
+          - not_null
+      - name: valid_to
+        description: "Last day this row was the plan of record (day before the superseding version_date), or 9999-12-31."
+        data_tests:
+          - not_null
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _sheet_name
+        description: "Lineage: Excel sheet the row came from."
+      - name: _row_number
+        description: "Lineage: row in the source sheet (header = 1)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
