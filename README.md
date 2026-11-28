@@ -15,11 +15,13 @@ Week 1 – Bronze layer (v0.2.0):
 - Silver baseline (v0.2.3): one staging model in plain SQL, `staging.stg_sales_transactions`, passes 13 of 13 plain-SQL tests (section III.C). dbt is set up: `dbt deps`, `dbt debug` and `dbt parse` pass, `_sources.yml` declares the 11 raw tables; no dbt models yet.
 - Silver masters (v0.2.4): 6 dbt staging models (customers, products, employees, employee changes, distributors, territory mapping); `dbt build -s staging` gives PASS=71, WARN=1, ERROR=0. Open rules: A-DQ09 and A-DQ18 in [`docs/assumptions_log.md`](docs/assumptions_log.md).
 - Silver facts (v0.2.5): 5 more dbt staging models (sales, distributor orders, returns, promotions, promotion × product). `dbt build` gives PASS=157, WARN=3, ERROR=0; staging net revenue = raw (158,957,563,200 VND).
-- Next: Week 2 – `stg_sales_targets` with target versioning (needs A-DQ18).
+- **Phase 2 Silver done (v0.3.0):** 13 dbt staging models incl. target versioning (A-DQ18). `dbt build`: 185 tests, 182 pass, 3 warn, 0 error; every DQ issue has a named test ([coverage](docs/data_issues.md#test-coverage)); all rows and amounts reconcile to raw.
+- Next: Phase 3 Gold – `dim_date`, SCD2 snapshot `dim_employee`, the other dims, facts (with the A-DQ09 territory flags) and marts.
 
 ## Changelog
 | Date | Version | Changes |
 | --- | --- | --- |
+| 2026-11-28 | 0.3.0 | - Phase 2 done: `stg_sales_targets`, `stg_sales_targets_versioned` (is_latest, valid_from/to).<br>- A-DQ09, A-DQ18 decided; A-T01 added.<br>- `dbt build`: 13 models, 185 tests (182 pass, 3 warn).<br>- Test coverage table in `data_issues.md`; README III.C, IV.A, IV.E filled. |
 | 2026-11-28 | 0.2.5 | - dbt staging facts: sales (migrated), distributor orders, returns, promotions, bridge.<br>- `dbt build`: 11 models, 149 tests (146 pass, 3 warn).<br>- DQ20 added: SRC05 derived columns, 177 `ontime_delivery` mismatches.<br>- `pain_points.md`: "After dbt" section with before/after numbers. |
 | 2026-11-28 | 0.2.4 | - dbt staging: 6 master models, 66 tests (65 pass, 1 warn).<br>- Macros `clean_text`, `clean_code`; generic test `row_count_equals`.<br>- DQ12/DQ13 reworded: read-time only, raw values correct.<br>- Added open decision A-DQ09 (off-territory rule). |
 | 2026-11-28 | 0.2.3 | - Silver (plain SQL): `stg_sales_transactions` + 13 tests in `sql/silver/` (13/13 pass).<br>- Added `docs/pain_points.md` (why dbt).<br>- dbt: `dbt_utils` 1.4.1, `_sources.yml` (11 raw tables).<br>- Fix: PowerShell UTF-8 tip in `sql/profiling/README.md`. |
@@ -270,7 +272,7 @@ vietdist-sales-distribution-analytics/
 │   ├── profiles.example.yml        # Template: copy to ~/.dbt/profiles.yml (no secrets, reads env vars)
 │   ├── packages.yml                # dbt_utils (package-lock.yml pins the resolved version)
 │   ├── models/
-│   │   ├── staging/                # _sources.yml (11 raw tables), _stg_models.yml (docs + tests), stg_*.sql (6 masters + 5 facts)
+│   │   ├── staging/                # _sources.yml (11 raw tables), _stg_models.yml (docs + tests), stg_*.sql (13 models: 6 masters, 5 facts, 2 targets)
 │   │   └── dwh/
 │   │       ├── dims/               # 6 dimensions
 │   │       ├── facts/              # 4 facts
@@ -300,7 +302,7 @@ vietdist-sales-distribution-analytics/
 ├── power_bi/                       # (planned) vietdist_report.pbix, 3 report pages from schema dwh
 │
 ├── docs/
-│   ├── data_issues.md              # Known data issues: count, evidence, Silver handling, planned test
+│   ├── data_issues.md              # Known data issues: count, evidence, Silver handling, dbt tests, coverage
 │   ├── pain_points.md              # Problems of plain-SQL Silver, and what dbt changed
 │   ├── data_dictionary.md          # (planned)
 │   └── assumptions_log.md          # Business rules chosen where the data allows more than one reading
@@ -692,7 +694,7 @@ Example: check the latest run
 
 ### B. Source Profiling (findings → silver tests)
 
-Before building Silver, every source file was profiled in [`notebooks/00_source_exploration.ipynb`](notebooks/00_source_exploration.ipynb): row counts, data types, null rates, candidate keys and an automatic foreign-key scan across all files. The findings are listed in [`docs/data_issues.md`](docs/data_issues.md), each with its count, the notebook cell it comes from, how Silver will handle it and the dbt test that will guard it. Every count is now proven: 16 SQL scripts in [`sql/profiling/`](sql/profiling/) run against the raw tables (batch `cdaee7385083`), and the rest come from saved notebook outputs. All 20 findings are verified. The scripts prove the grain (SRC01 and SRC05 unique on `order_id` + `product_id`), the foreign keys, the data period (`dim_date` must reach 2025-01-02) and the issues the Silver layer has to handle: 547 sales after the resign date, 4,192 off-territory lines (all caused by customers still mapped to resigned reps), 85 territory rows not updated for the July transfers, the half-to-even rounding of `discount_amount`, three line-level fields in SRC01, the 145-row promotion × product bridge and the 48 overlapping target rows. Where the data allows more than one reading, the rule is recorded in [`docs/assumptions_log.md`](docs/assumptions_log.md): A-DQ08 (resign date) is decided; A-DQ09 (off-territory rule) and A-DQ18 (target rows of resigned employees) are open. Each finding then becomes a dbt test in the Silver layer, so the checks run on every build instead of only once.
+Before building Silver, every source file was profiled in [`notebooks/00_source_exploration.ipynb`](notebooks/00_source_exploration.ipynb): row counts, data types, null rates, candidate keys and an automatic foreign-key scan across all files. The findings are listed in [`docs/data_issues.md`](docs/data_issues.md), each with its count, the notebook cell it comes from, how Silver will handle it and the dbt test that will guard it. Every count is now proven: 17 SQL scripts in [`sql/profiling/`](sql/profiling/) run against the raw tables (batch `cdaee7385083`), 2 more check rules on the staging views (`territory_flags_check.sql`, `target_versioning_checks.sql`), and the rest come from saved notebook outputs. All 20 findings are verified. The scripts prove the grain (SRC01 and SRC05 unique on `order_id` + `product_id`), the foreign keys, the data period (`dim_date` must reach 2025-01-02) and the issues the Silver layer has to handle: 547 sales after the resign date, 4,192 off-territory lines (all caused by customers still mapped to resigned reps), 85 territory rows not updated for the July transfers, the half-to-even rounding of `discount_amount`, three line-level fields in SRC01, the 145-row promotion × product bridge and the 48 overlapping target rows. Where the data allows more than one reading, the rule is recorded in [`docs/assumptions_log.md`](docs/assumptions_log.md): A-DQ08 (resign date), A-DQ09 (territory mapping ends at the resign date) and A-DQ18 (target rows of resigned employees superseded by v2) are decided. Each finding then becomes a dbt test in the Silver layer, so the checks run on every build instead of only once.
 
 ### C. Silver Layer
 
@@ -719,12 +721,35 @@ The 6 master tables are dbt views in schema `staging`: `stg_customers` (2,000), 
 
 5 more views: `stg_sales_transactions` (119,101, migrated from `sql/silver/`), `stg_distributor_orders` (35,945 lines, 8,000 orders), `stg_returns` (3,665), `stg_promotions` (40) and `stg_promotion_products` (145, the `|`-split of `applicable_products`, DQ17).
 
-- Stored amounts are kept, not recomputed (DQ14, DQ20); tolerance tests check them against their base columns. `is_post_resign_sale` follows A-DQ08 and joins `ref('stg_employees')`. There is no territory logic (A-DQ09 is open) and no `is_return_on_undelivered` flag (DQ16 = 0, tested instead).
+- Stored amounts are kept, not recomputed (DQ14, DQ20); tolerance tests check them against their base columns. `is_post_resign_sale` follows A-DQ08 and joins `ref('stg_employees')`. There is no territory logic in staging (A-DQ09 applies it in Gold) and no `is_return_on_undelivered` flag (DQ16 = 0, tested instead).
 - Business-rule tests on returns: each return matches exactly one sales line, never exceeds the quantity sold, is dated after the order, is on a `Delivered` line, and has the same customer and rep as the sale.
 - Reconciliation: every fact model has the raw row count, and staging net revenue equals raw, 158,957,563,200 VND (`assert_stg_sales_transactions_net_amount_reconciles`).
 - `dbt build` (whole project) gives PASS=157, WARN=3, ERROR=0: 11 models and 149 tests. The 3 warnings document known issues at their exact counts: 547 post-resign sales (DQ08), 196 customers mapped to a resigned rep (DQ09), 177 `ontime_delivery` mismatches (DQ20). Each warning turns into an error if its count changes.
 #### Cleaning and Standardisation
+
+The 13 staging models (all views in schema `staging`) apply the same steps; each step in the SQL carries a comment with its DQ or assumption ID.
+
+1. Read raw only through `{{ source('raw', ...) }}`; models refer to each other only with `{{ ref() }}`.
+2. Select columns explicitly; rename where the raw name is unclear (`assigned_supervisor_id` → `supervisor_employee_id`, DQ06; `region` / `team` → `plan_region` / `plan_team` in targets).
+3. `clean_text()`: fake nulls (`''`, `nan`, `NaN`, `None`) to `NULL`, trim, Unicode NFC. Vietnamese values keep their diacritics.
+4. `clean_code()`: `clean_text()` plus upper-case, for every id and code, so keys match across sources.
+5. Cast types: dates → `date`, money → `numeric(18,2)`, quantities and counts → `integer`, percentages → `numeric(5,2)`; ids, phone and tax code stay text (DQ12, DQ13).
+6. Derive version keys from the sheet name (`employee_version`, `plan_version`) and test them against the raw version column.
+7. Drop derived and dimension columns that Gold dims provide (month / quarter / year, region, product category, employee name; DQ14, DQ20).
+8. Keep stored amounts as booked (DQ14, DQ20); tolerance tests check them against their base columns instead of recomputing.
+9. Add the columns Gold needs: `is_post_resign_sale` (A-DQ08), `is_open_ended` (DQ19), `target_month`, and the version columns below.
+10. Split the multi-value `applicable_products` into the bridge `stg_promotion_products` (DQ17).
+11. Keep lineage: `_source_file`, `_sheet_name` (Excel sources), `_row_number`, `_batch_id`, `_loaded_at`.
+
+No code is written for an issue that does not exist in raw (for example the phone leading zero, DQ12): a test guards it instead. Tests follow one convention: errors for anything that must hold, `warn` only for a known, accepted issue. The three warn tests return the affected rows and use `warn_if: != 0` with `error_if: != <count>`, so they warn at the documented count and fail the build if it changes.
+
 #### Sales Target Versioning
+
+`stg_sales_targets` keeps both plan versions as delivered (1,950 rows: v1 1,332, v2 618). `stg_sales_targets_versioned` adds the version logic of [A-DQ18](docs/assumptions_log.md#a-dq18--sales-target-v1-h2-rows-of-resigned-employees) (option a):
+
+- **Rule:** for each employee-month, the latest version is the covering version (by `effective_from` – `effective_to`) with the newest `version_date`. A version re-plans its whole period, so the 48 v1 H2 rows of the 8 resigned employees are superseded even though they have no v2 row. The rule is data-driven, so a further version needs no code change ([A-T01](docs/assumptions_log.md#a-t01--only-v1-and-v2-in-the-sample): the sample has only v1 and v2).
+- **Columns:** `is_latest`; `superseded_by_version` (`v2` for v1 rows in months 7–12); `valid_from` = the version's `version_date` (v1 2024-01-05, v2 2024-07-03); `valid_to` = the day before the superseding `version_date` (2024-07-02 for v1 H2 rows) or `9999-12-31`.
+- **Result:** 1,284 latest rows (666 v1 in months 1–6 + 618 v2); 0 employee-months with two latest rows; 48 employee-months with none (the resigned employees in H2); H2 latest target 139,998,000,000 VND vs v1 139,999,600,000 VND (−1,600,000 = −10,743,800,000 removed + 10,742,200,000 re-assigned). Checks in section IV.E.
 
 ### D. Gold Layer
 #### Fact and Dimension Tables
@@ -737,6 +762,8 @@ The 6 master tables are dbt views in schema `staging`: `stg_customers` (2,000), 
 
 ### A. Data Quality Checks
 
+`dbt build` runs 185 tests on the 13 staging models (2026-11-28): **182 pass, 3 warn, 0 error**. The 3 warnings document known issues at their exact count: 547 post-resign sales (DQ08), 196 customers mapped to a resigned rep (DQ09), 177 `ontime_delivery` mismatches (DQ20). Every DQ issue maps to named tests: see the [test coverage table](docs/data_issues.md#test-coverage) in `docs/data_issues.md`.
+
 ### B. Source-to-Target Reconciliation
 
 ### C. Incremental Load and Rerun Tests
@@ -745,8 +772,30 @@ The 6 master tables are dbt views in schema `staging`: `stg_customers` (2,000), 
 
 ### E. Sales Target Version Validation
 
+[`sql/profiling/target_versioning_checks.sql`](sql/profiling/target_versioning_checks.sql) prints 22 checks in one result set (expected vs actual); all 22 pass (2026-11-28). The key ones are also dbt tests (error level):
+
+| Check | Expected | Actual | dbt test |
+|---|---|---|---|
+| Rows (v1 / v2) | 1,950 (1,332 / 618) | 1,950 (1,332 / 618) | `row_count_equals_stg_sales_targets_versioned_1950`, `assert_stg_sales_targets_rows_per_version` |
+| Latest rows | 1,284 | 1,284 | `assert_stg_sales_targets_versioned_latest_rows` |
+| Employee-months with more than one latest row | 0 | 0 | `assert_stg_sales_targets_versioned_one_latest_per_month` |
+| Latest H2 rows of the 8 resigned employees | 0 | 0 | `assert_stg_sales_targets_versioned_resigned_no_latest_h2` |
+| v2 employee-months missing in v1 | 0 | 0 | `assert_stg_sales_targets_versioned_v2_in_v1` |
+| Duplicates on employee × year × month × version | 0 | 0 | `dbt_utils_unique_combination_of_columns_stg_sales_targets_versioned_employee_id__year__month__plan_version` |
+| H2 latest vs v1 target revenue (VND) | −1,600,000 | −1,600,000 | – (check 18 in the SQL file) |
+
 ## V. How to Run Locally
 ### A. First Run
+
+After the Quick start (section II), build and test Silver from `vietdist_dbt/`:
+
+```powershell
+. ..\scripts\load_env.ps1          # macOS/Linux: source ../scripts/load_env.sh
+dbt deps                            # installs dbt_utils
+dbt build                           # 13 staging views + 185 tests
+dbt docs generate                   # lineage graph and catalogue
+dbt docs serve                      # opens the docs site at http://localhost:8080
+```
 ### B. Simulate a New Monthly File
 ### C. Verify the Output
 
