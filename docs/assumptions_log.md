@@ -5,6 +5,7 @@ Business rules chosen where the source data allows more than one reading. Each e
 | ID | Assumption | Status | Decided |
 |---|---|---|---|
 | A-DQ08 | Resign date rule | Decided | 2026-11-28 |
+| A-DQ09 | Off-territory flag for customers of resigned reps | Open – decision needed | – |
 | A-DQ18 | Sales target: v1 H2 rows of resigned employees | Open – decision needed | – |
 
 ---
@@ -47,6 +48,31 @@ Business rules chosen where the source data allows more than one reading. Each e
 **Where it is applied**
 - Silver: `is_post_resign_sale` on the sales staging model; warn-level test that the flagged count is 547; test that staging net revenue equals raw.
 - Gold: `dim_employee` SCD2 validity dates as above; `fact_sales` carries the flag.
+
+---
+
+## A-DQ09 – Off-territory flag for customers of resigned reps
+
+**Issue:** [DQ09](data_issues.md) – sales by a rep who is not the customer's mapped rep; [DQ11](data_issues.md) – SRC08 not updated for the July transfers.
+
+**Status:** Open – decision needed. `stg_territory_mapping` passes SRC08 through unchanged; the rule is applied later in `fact_sales`.
+
+**Facts** (`sql/profiling/off_territory_sales.sql`, `sql/profiling/territory_vs_transfers.sql`, run 2026-11-28 on raw batch `cdaee7385083`; dbt test `warn_stg_territory_mapping_resigned_rep`)
+
+- SRC08 has one version (v1, 2024-01-01 to 9999-12-31) and was never updated in 2024.
+- 4,192 sales lines (5,625,298,000 VND) are sold by a rep other than the mapped rep, all in July–December.
+- Every one of them is to a customer mapped to one of the 8 resigned employees, ordered from 2024-07-01 on. All resign dates fall between 2024-05-24 and 2024-06-18 (`data_period.sql`).
+- 196 customers in SRC08 are mapped to a resigned rep (`warn_stg_territory_mapping_resigned_rep`).
+- The 5 transferred reps are not a cause: 0 off-territory lines are mapped to them.
+
+**Options**
+
+| Option | Rule | Lines flagged `is_off_territory` |
+|---|---|---|
+| (a) SRC08 as delivered | Flag when the seller differs from the SRC08 rep | 4,192 |
+| (b) Mapping ends at resign date | A customer whose mapped rep resigned before the order date has no valid mapping, so the line is not flagged (it could get its own flag, e.g. `is_orphaned_territory`) | 0 |
+
+**Where it will be applied:** `fact_sales.is_off_territory`; warn test on the flagged count (4,192 under (a), 0 under (b)).
 
 ---
 
