@@ -70,3 +70,55 @@ models:
         description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
       - name: _loaded_at
         description: "Lineage: load timestamp (UTC)."
+
+  - name: stg_products
+    description: "One row per product from SRC04 (sheet Products), cleaned and typed. PK product_id; 100 rows."
+    data_tests:
+      - row_count_equals:
+          arguments:
+            expected: 100
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "cost_price <= unit_price"
+    columns:
+      - name: product_id
+        description: "Product code (e.g. PRD0001), upper-case; primary key."
+        data_tests:
+          - unique
+          - not_null
+      - name: product_name
+        description: "Product name in Vietnamese."
+      - name: category
+        description: "Product category, Vietnamese value (e.g. Thực phẩm, Thức uống)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Chăm sóc cá nhân', 'Gia dụng', 'Thực phẩm', 'Thức uống']
+      - name: sub_category
+        description: "Product sub-category, Vietnamese value (e.g. Mì ăn liền)."
+      - name: unit
+        description: "Sales unit, Vietnamese value (e.g. Chai, Hộp, Thùng)."
+      - name: unit_price
+        description: "List price per unit in VND, numeric(18,2)."
+      - name: cost_price
+        description: "Cost price per unit in VND, numeric(18,2); never above unit_price."
+      - name: weight_gram
+        description: "Weight per unit in grams."
+      - name: status
+        description: "Product status: Active or Discontinued."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Active', 'Discontinued']
+      - name: launch_date
+        description: "Date the product was launched."
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _sheet_name
+        description: "Lineage: Excel sheet the row came from (Products)."
+      - name: _row_number
+        description: "Lineage: row in the source sheet (header = 1)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
