@@ -1,0 +1,72 @@
+version: 2
+
+models:
+  - name: stg_customers
+    description: "One row per customer from SRC03, cleaned and typed. PK customer_id; 2,000 rows."
+    data_tests:
+      - row_count_equals:
+          arguments:
+            expected: 2000
+    columns:
+      - name: customer_id
+        description: "Customer code (e.g. CUS00001), upper-case; primary key."
+        data_tests:
+          - unique
+          - not_null
+      - name: customer_name
+        description: "Customer (shop) name in Vietnamese."
+      - name: customer_type
+        description: "Type of outlet, Vietnamese value (e.g. Tạp hóa, Siêu thị)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Canteen', 'Cửa hàng tiện lợi', 'Nhà hàng', 'Online Seller', 'Siêu thị', 'Tạp hóa']
+      - name: channel
+        description: "Sales channel of the customer."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['E-commerce', 'Modern Trade', 'Traditional Trade']
+      - name: province
+        description: "Province of the customer, Vietnamese value."
+      - name: region
+        description: "Region of the customer: Miền Bắc, Miền Trung or Miền Nam."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Miền Bắc', 'Miền Nam', 'Miền Trung']
+      - name: address
+        description: "Street address, Vietnamese free text."
+      - name: phone
+        description: "Phone number as text, 11 digits starting with 0 (DQ12)."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "~ '^0[0-9]{10}$'"
+      - name: tax_code
+        description: "Tax code as text, 10 digits; NULL for 1,035 customers (DQ13)."
+        data_tests:
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "~ '^[0-9]{10}$'"
+              config:
+                where: "tax_code is not null"
+      - name: join_date
+        description: "Date the customer joined."
+      - name: credit_limit
+        description: "Credit limit in VND, numeric(18,2)."
+      - name: status
+        description: "Customer status: Active or Inactive (the 157 Inactive are the unmapped customers, DQ10)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Active', 'Inactive']
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _row_number
+        description: "Lineage: row in the source file (header = 1)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
