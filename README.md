@@ -14,11 +14,13 @@ Week 1 – Bronze layer (v0.2.0):
 - Item 7, source profiling (v0.2.2): done 2026-11-28. All 19 findings in [`docs/data_issues.md`](docs/data_issues.md) are verified with a count from a script in `sql/profiling/` or a saved notebook output; 0 partial, 0 unverified. One business rule is still open: A-DQ18 (how the 48 v1 H2 target rows of resigned employees count as latest) in [`docs/assumptions_log.md`](docs/assumptions_log.md).
 - Silver baseline (v0.2.3): one staging model in plain SQL, `staging.stg_sales_transactions`, passes 13 of 13 plain-SQL tests (section III.C). dbt is set up: `dbt deps`, `dbt debug` and `dbt parse` pass, `_sources.yml` declares the 11 raw tables; no dbt models yet.
 - Silver masters (v0.2.4): 6 dbt staging models (customers, products, employees, employee changes, distributors, territory mapping); `dbt build -s staging` gives PASS=71, WARN=1, ERROR=0. Open rules: A-DQ09 and A-DQ18 in [`docs/assumptions_log.md`](docs/assumptions_log.md).
-- Next: Week 2 – dbt staging models for the facts (sales, distributor orders, returns, targets, promotions).
+- Silver facts (v0.2.5): 5 more dbt staging models (sales, distributor orders, returns, promotions, promotion × product). `dbt build` gives PASS=157, WARN=3, ERROR=0; staging net revenue = raw (158,957,563,200 VND).
+- Next: Week 2 – `stg_sales_targets` with target versioning (needs A-DQ18).
 
 ## Changelog
 | Date | Version | Changes |
 | --- | --- | --- |
+| 2026-11-28 | 0.2.5 | - dbt staging facts: sales (migrated), distributor orders, returns, promotions, bridge.<br>- `dbt build`: 11 models, 149 tests (146 pass, 3 warn).<br>- DQ20 added: SRC05 derived columns, 177 `ontime_delivery` mismatches.<br>- `pain_points.md`: "After dbt" section with before/after numbers. |
 | 2026-11-28 | 0.2.4 | - dbt staging: 6 master models, 66 tests (65 pass, 1 warn).<br>- Macros `clean_text`, `clean_code`; generic test `row_count_equals`.<br>- DQ12/DQ13 reworded: read-time only, raw values correct.<br>- Added open decision A-DQ09 (off-territory rule). |
 | 2026-11-28 | 0.2.3 | - Silver (plain SQL): `stg_sales_transactions` + 13 tests in `sql/silver/` (13/13 pass).<br>- Added `docs/pain_points.md` (why dbt).<br>- dbt: `dbt_utils` 1.4.1, `_sources.yml` (11 raw tables).<br>- Fix: PowerShell UTF-8 tip in `sql/profiling/README.md`. |
 | 2026-11-28 | 0.2.2 | - Profiling done: all 19 findings in `docs/data_issues.md` verified.<br>- New scripts in `sql/profiling/`: `derived_columns_src01.sql` (DQ14), `order_header_consistency.sql` (DQ15), `target_overlap.sql` (DQ18), `returns_on_undelivered.sql` (DQ16), `off_territory_sales.sql` (DQ09), `territory_vs_transfers.sql` (DQ11), `promotion_products.sql` (DQ17).<br>- `docs/assumptions_log.md`: added A-DQ18 (open – decision needed).<br>- `sql/profiling/README.md`: every script with pass condition and result.<br>- README: project status, section I.D and III.B match the profiling results; DQ08 counts added; `assumptions_log.md` no longer marked planned. |
@@ -110,6 +112,7 @@ The source files contain deliberate quality issues. Bronze loads them as-is; Sil
 - Returns linked to sales lines that were cancelled or still delivering: 0. All 3,665 returns point to a delivered line.
 - SRC10 `applicable_products` holds several product ids separated by `|` (36 of 40 promotions; 145 promotion × product pairs, all in the product master).
 - Sales target v1 and v2 overlap for July–December: 618 v1 rows are re-planned in v2; 48 v1 rows of the 8 resigned employees have no v2 row (rule open, A-DQ18).
+- SRC05 stores derived columns too: all match except `ontime_delivery` (177 early or on-time lines stored as `No`, DQ20).
 - 219 SRC05 `expected_delivery_date` values fall in 2025, so `dim_date` must reach 2025-01-02. SRC08 uses `9999-12-31` as an open end date.
 
 ### E. Business Requirements
@@ -267,7 +270,7 @@ vietdist-sales-distribution-analytics/
 │   ├── profiles.example.yml        # Template: copy to ~/.dbt/profiles.yml (no secrets, reads env vars)
 │   ├── packages.yml                # dbt_utils (package-lock.yml pins the resolved version)
 │   ├── models/
-│   │   ├── staging/                # _sources.yml (11 raw tables), _stg_models.yml (docs + tests), stg_*.sql (6 masters so far)
+│   │   ├── staging/                # _sources.yml (11 raw tables), _stg_models.yml (docs + tests), stg_*.sql (6 masters + 5 facts)
 │   │   └── dwh/
 │   │       ├── dims/               # 6 dimensions
 │   │       ├── facts/              # 4 facts
@@ -288,7 +291,7 @@ vietdist-sales-distribution-analytics/
 │
 ├── sql/
 │   ├── profiling/                  # SQL checks behind docs/data_issues.md (one script per finding)
-│   └── silver/                     # Plain-SQL baseline: stg_sales_transactions.sql, tests/, run_tests.sh / .ps1
+│   └── silver/                     # Superseded plain-SQL baseline (kept for comparison, do not run): README.md, stg_sales_transactions.sql, tests/, run_tests.sh / .ps1
 │
 ├── scripts/
 │   ├── load_env.sh                 # Loads .env into the shell (macOS/Linux)
@@ -298,7 +301,7 @@ vietdist-sales-distribution-analytics/
 │
 ├── docs/
 │   ├── data_issues.md              # Known data issues: count, evidence, Silver handling, planned test
-│   ├── pain_points.md              # Problems of building Silver in plain SQL (why dbt)
+│   ├── pain_points.md              # Problems of plain-SQL Silver, and what dbt changed
 │   ├── data_dictionary.md          # (planned)
 │   └── assumptions_log.md          # Business rules chosen where the data allows more than one reading
 │
@@ -689,7 +692,7 @@ Example: check the latest run
 
 ### B. Source Profiling (findings → silver tests)
 
-Before building Silver, every source file was profiled in [`notebooks/00_source_exploration.ipynb`](notebooks/00_source_exploration.ipynb): row counts, data types, null rates, candidate keys and an automatic foreign-key scan across all files. The findings are listed in [`docs/data_issues.md`](docs/data_issues.md), each with its count, the notebook cell it comes from, how Silver will handle it and the dbt test that will guard it. Every count is now proven: 15 SQL scripts in [`sql/profiling/`](sql/profiling/) run against the raw tables (batch `cdaee7385083`), and the rest come from saved notebook outputs. All 19 findings are verified. The scripts prove the grain (SRC01 and SRC05 unique on `order_id` + `product_id`), the foreign keys, the data period (`dim_date` must reach 2025-01-02) and the issues the Silver layer has to handle: 547 sales after the resign date, 4,192 off-territory lines (all caused by customers still mapped to resigned reps), 85 territory rows not updated for the July transfers, the half-to-even rounding of `discount_amount`, three line-level fields in SRC01, the 145-row promotion × product bridge and the 48 overlapping target rows. Where the data allows more than one reading, the rule is recorded in [`docs/assumptions_log.md`](docs/assumptions_log.md): A-DQ08 (resign date) is decided; A-DQ09 (off-territory rule) and A-DQ18 (target rows of resigned employees) are open. Each finding then becomes a dbt test in the Silver layer, so the checks run on every build instead of only once.
+Before building Silver, every source file was profiled in [`notebooks/00_source_exploration.ipynb`](notebooks/00_source_exploration.ipynb): row counts, data types, null rates, candidate keys and an automatic foreign-key scan across all files. The findings are listed in [`docs/data_issues.md`](docs/data_issues.md), each with its count, the notebook cell it comes from, how Silver will handle it and the dbt test that will guard it. Every count is now proven: 16 SQL scripts in [`sql/profiling/`](sql/profiling/) run against the raw tables (batch `cdaee7385083`), and the rest come from saved notebook outputs. All 20 findings are verified. The scripts prove the grain (SRC01 and SRC05 unique on `order_id` + `product_id`), the foreign keys, the data period (`dim_date` must reach 2025-01-02) and the issues the Silver layer has to handle: 547 sales after the resign date, 4,192 off-territory lines (all caused by customers still mapped to resigned reps), 85 territory rows not updated for the July transfers, the half-to-even rounding of `discount_amount`, three line-level fields in SRC01, the 145-row promotion × product bridge and the 48 overlapping target rows. Where the data allows more than one reading, the rule is recorded in [`docs/assumptions_log.md`](docs/assumptions_log.md): A-DQ08 (resign date) is decided; A-DQ09 (off-territory rule) and A-DQ18 (target rows of resigned employees) are open. Each finding then becomes a dbt test in the Silver layer, so the checks run on every build instead of only once.
 
 ### C. Silver Layer
 
@@ -711,6 +714,15 @@ The 6 master tables are dbt views in schema `staging`: `stg_customers` (2,000), 
 - Shared macros replace the copy-paste of the plain-SQL model: `clean_text()` (fake nulls to `NULL`, trim, NFC) and `clean_code()` (plus upper-case for ids). The generic test `row_count_equals` pins each expected row count.
 - Tests and column docs live in one file, [`_stg_models.yml`](vietdist_dbt/models/staging/_stg_models.yml): 66 tests (keys, relationships, accepted values with the real Vietnamese values, phone and tax code patterns). One warn-level test documents a known issue: 196 customers are still mapped to a resigned rep (DQ09, A-DQ09).
 - Run from `vietdist_dbt/` after loading `.env` (`. ..\scripts\load_env.ps1`): `dbt build -s staging` builds the views and runs the tests; `dbt docs generate` builds the catalogue.
+
+#### dbt staging – facts
+
+5 more views: `stg_sales_transactions` (119,101, migrated from `sql/silver/`), `stg_distributor_orders` (35,945 lines, 8,000 orders), `stg_returns` (3,665), `stg_promotions` (40) and `stg_promotion_products` (145, the `|`-split of `applicable_products`, DQ17).
+
+- Stored amounts are kept, not recomputed (DQ14, DQ20); tolerance tests check them against their base columns. `is_post_resign_sale` follows A-DQ08 and joins `ref('stg_employees')`. There is no territory logic (A-DQ09 is open) and no `is_return_on_undelivered` flag (DQ16 = 0, tested instead).
+- Business-rule tests on returns: each return matches exactly one sales line, never exceeds the quantity sold, is dated after the order, is on a `Delivered` line, and has the same customer and rep as the sale.
+- Reconciliation: every fact model has the raw row count, and staging net revenue equals raw, 158,957,563,200 VND (`assert_stg_sales_transactions_net_amount_reconciles`).
+- `dbt build` (whole project) gives PASS=157, WARN=3, ERROR=0: 11 models and 149 tests. The 3 warnings document known issues at their exact counts: 547 post-resign sales (DQ08), 196 customers mapped to a resigned rep (DQ09), 177 `ontime_delivery` mismatches (DQ20). Each warning turns into an error if its count changes.
 #### Cleaning and Standardisation
 #### Sales Target Versioning
 
