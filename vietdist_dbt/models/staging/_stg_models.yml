@@ -122,3 +122,297 @@ models:
         description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
       - name: _loaded_at
         description: "Lineage: load timestamp (UTC)."
+
+  - name: stg_employees
+    description: "One row per employee per version from SRC07 (v1 = start of year, v2 = July adjustment). PK employee_id + employee_version; 114 rows per version."
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          arguments:
+            combination_of_columns: ['employee_id', 'employee_version']
+      - row_count_equals:
+          arguments:
+            expected: 228
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "employee_version = source_version"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "resign_date is null and transfer_note is null"
+          config:
+            where: "employee_version = 'v1'"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "resign_date >= join_date"
+          config:
+            where: "resign_date is not null"
+    columns:
+      - name: employee_id
+        description: "Employee code (e.g. EMP1001), upper-case; with employee_version the primary key."
+        data_tests:
+          - not_null
+      - name: employee_version
+        description: "Version from the sheet name: v1 (Employee_v1_StartYear) or v2 (Employee_v2_Adjustment)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['v1', 'v2']
+      - name: source_version
+        description: "Raw `version` column; must equal employee_version."
+      - name: full_name
+        description: "Employee full name in Vietnamese."
+      - name: gender
+        description: "Gender, Vietnamese value: Nam (male) or Nữ (female)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Nam', 'Nữ']
+      - name: position
+        description: "Job title (e.g. Sales Representative, Sales Supervisor)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Area Manager', 'Sales Representative', 'Sales Supervisor', 'Senior Sales Representative']
+      - name: region
+        description: "Region of the employee in this version: Miền Bắc, Miền Trung or Miền Nam."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Miền Bắc', 'Miền Nam', 'Miền Trung']
+      - name: team
+        description: "Sales team in this version (e.g. Team Bắc 1, Management)."
+      - name: email
+        description: "Work email address."
+      - name: phone
+        description: "Phone number as text, 10 digits starting with 0 (DQ12)."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "~ '^0[0-9]{9}$'"
+      - name: status
+        description: "Employment status in this version: Active or Resigned."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Active', 'Resigned']
+      - name: date_of_birth
+        description: "Date of birth."
+      - name: join_date
+        description: "Date the employee joined the company."
+      - name: effective_date
+        description: "Date this version became valid (2024-01-01 for v1, 2024-07-01 for v2)."
+      - name: resign_date
+        description: "True end of employment (A-DQ08); set for the 8 resigned employees in v2 only."
+      - name: transfer_note
+        description: "Free-text note on a region transfer (v2 only, DQ11)."
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _sheet_name
+        description: "Lineage: Excel sheet the row came from; also the version key."
+      - name: _row_number
+        description: "Lineage: row in the source sheet (header = 1)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
+
+  - name: stg_employee_changes
+    description: "One row per HR change from the SRC07 Change_Log sheet: 8 resignations and 5 region transfers; 13 rows."
+    data_tests:
+      - row_count_equals:
+          arguments:
+            expected: 13
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "new_region is not null and new_team is not null"
+          config:
+            where: "change_type = 'Chuyển vùng'"
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "new_region is null and new_team is null"
+          config:
+            where: "change_type = 'Nghỉ việc'"
+    columns:
+      - name: employee_id
+        description: "Employee code of the changed employee; references stg_employees."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_id
+      - name: employee_name
+        description: "Employee name in Vietnamese."
+      - name: change_type
+        description: "Type of change, Vietnamese value: Nghỉ việc (resigned) or Chuyển vùng (region transfer)."
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: ['Nghỉ việc', 'Chuyển vùng']
+      - name: effective_date
+        description: "Date HR recorded the change (2024-07-01); not the resign date (A-DQ08)."
+        data_tests:
+          - not_null
+      - name: old_region
+        description: "Region before the change."
+      - name: new_region
+        description: "Region after a transfer; NULL for resignations."
+      - name: old_team
+        description: "Team before the change."
+      - name: new_team
+        description: "Team after a transfer; NULL for resignations."
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _sheet_name
+        description: "Lineage: Excel sheet the row came from (Change_Log)."
+      - name: _row_number
+        description: "Lineage: row in the source sheet (header = 1)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
+
+  - name: stg_distributors
+    description: "One row per distributor from SRC06, cleaned and typed. PK distributor_id; 138 rows."
+    data_tests:
+      - row_count_equals:
+          arguments:
+            expected: 138
+    columns:
+      - name: distributor_id
+        description: "Distributor code (e.g. DIST0001), upper-case; primary key."
+        data_tests:
+          - unique
+          - not_null
+      - name: distributor_name
+        description: "Distributor company name in Vietnamese."
+      - name: tier
+        description: "Distributor tier, Vietnamese value (e.g. Nhà phân phối cấp 1)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Nhà phân phối cấp 1', 'Đại lý cấp 2', 'Điểm bán lẻ']
+      - name: channel
+        description: "Sales channel of the distributor."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['E-commerce', 'Modern Trade', 'Traditional Trade']
+      - name: province
+        description: "Province of the distributor, Vietnamese value."
+      - name: region
+        description: "Region of the distributor: Miền Bắc, Miền Trung or Miền Nam."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Miền Bắc', 'Miền Nam', 'Miền Trung']
+      - name: contact_person
+        description: "Name of the contact person in Vietnamese."
+      - name: phone
+        description: "Phone number as text, 11 digits starting with 0 (DQ12)."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "~ '^0[0-9]{10}$'"
+      - name: email
+        description: "Contact email address."
+      - name: tax_code
+        description: "Tax code as text, 10 digits; never NULL in SRC06 (DQ13)."
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              arguments:
+                expression: "~ '^[0-9]{10}$'"
+      - name: join_date
+        description: "Date the distributor joined."
+      - name: credit_limit
+        description: "Credit limit in VND, numeric(18,2)."
+      - name: status
+        description: "Distributor status: Active or Inactive."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Active', 'Inactive']
+      - name: supervisor_employee_id
+        description: "Employee code of the assigned sales supervisor (raw assigned_supervisor_id, DQ06)."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_id
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _row_number
+        description: "Lineage: row in the source file (header = 1)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
+
+  - name: stg_territory_mapping
+    description: "One row per mapped customer from SRC08 (single version v1, never updated in 2024). PK customer_id; 1,843 rows."
+    data_tests:
+      - row_count_equals:
+          arguments:
+            expected: 1843
+      - dbt_utils.expression_is_true:
+          arguments:
+            expression: "expiry_date >= effective_date"
+    columns:
+      - name: customer_id
+        description: "Customer code; primary key (one rep per customer); references stg_customers."
+        data_tests:
+          - unique
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_customers')
+                field: customer_id
+      - name: territory_id
+        description: "Mapping row code (e.g. TER00001)."
+      - name: employee_id
+        description: "Employee code of the rep the customer is mapped to; references stg_employees."
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_employees')
+                field: employee_id
+      - name: region
+        description: "Region of the mapping as of 2024-01-01 (stale for the 5 July transfers, DQ11)."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['Miền Bắc', 'Miền Nam', 'Miền Trung']
+      - name: team
+        description: "Team of the mapped rep as of 2024-01-01."
+      - name: effective_date
+        description: "Start of validity (2024-01-01 for every row)."
+        data_tests:
+          - not_null
+      - name: expiry_date
+        description: "End of validity; 9999-12-31 means open-ended (DQ19)."
+        data_tests:
+          - not_null
+      - name: is_open_ended
+        description: "True when expiry_date = 9999-12-31 (no end date)."
+      - name: version
+        description: "Mapping version; only v1 exists."
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: ['v1']
+      - name: _source_file
+        description: "Lineage: source file name."
+      - name: _sheet_name
+        description: "Lineage: Excel sheet the row came from (Sheet1)."
+      - name: _row_number
+        description: "Lineage: row in the source sheet (header = 1)."
+      - name: _batch_id
+        description: "Lineage: loader run id, joins to raw.ingest_log.batch_id."
+      - name: _loaded_at
+        description: "Lineage: load timestamp (UTC)."
