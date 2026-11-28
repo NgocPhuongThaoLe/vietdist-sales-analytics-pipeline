@@ -5,7 +5,7 @@
 -- STALE MAPPING: SRC08 was never updated after the 8 resignations and the 5 July region transfers.
 --   DQ09: all 4,192 off-territory sales lines are to customers still mapped to a resigned rep.
 --   DQ11: all 85 rows of the 5 transferred reps still show their old region.
---   How is_off_territory treats these is open: A-DQ09 (docs/assumptions_log.md). Staging only
+--   A-DQ09 (decided): a mapping ends at the mapped rep's resign date; Gold applies it. Staging only
 --   passes the mapping through; it does not re-assign customers.
 -- Materialized as a view (dbt_project.yml: staging = view).
 
